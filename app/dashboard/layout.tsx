@@ -70,7 +70,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* Existing Sidebar Links / Menu */}
         <div className="flex-1 overflow-y-auto p-4 space-y-1 text-sm">
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-3">Repair</div>
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-3">Inventory & Boxes</div>
+          <Link href="/dashboard/box-builder" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300 font-medium flex items-center gap-2">
+            <span>📦</span> Box Builder
+          </Link>
+
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mt-6 mb-2 px-3">Repair</div>
           <Link href="/dashboard/repair-request" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Repair Request</Link>
           <Link href="/dashboard/repair-receive" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Repair Receive</Link>
           <Link href="/dashboard/trace-history" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Trace Repair History</Link>
