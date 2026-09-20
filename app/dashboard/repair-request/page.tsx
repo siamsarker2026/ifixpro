@@ -14,16 +14,11 @@ interface QueueItem {
 }
 
 export default function RepairRequestPage() {
-  const [openRequests, setOpenRequests] = useState<any[]>([])
   const [technicians, setTechnicians] = useState<any[]>([])
   const [services, setServices] = useState<any[]>([])
 
   const [loading, setLoading] = useState(true)
-  const [actionLoading, setActionLoading] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
-
-  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null)
-  const [selectedRequestObj, setSelectedRequestObj] = useState<any>(null)
 
   const [technicianId, setTechnicianId] = useState('')
   const [serviceSearch, setServiceSearch] = useState('')
@@ -51,6 +46,15 @@ export default function RepairRequestPage() {
     processQueue()
   }, [queue])
 
+  // When technician changes, load their active session items
+  useEffect(() => {
+    if (technicianId) {
+      loadTechnicianScannedItems(technicianId)
+    } else {
+      setScannedItems([])
+    }
+  }, [technicianId])
+
   async function fetchInitialData() {
     setLoading(true)
     
@@ -70,58 +74,18 @@ export default function RepairRequestPage() {
       setServices(servData)
     }
 
-    await loadOpenRequests()
     setLoading(false)
   }
 
-  async function loadOpenRequests() {
-    const { data: reqs, error } = await supabase
-      .from('repair_requests')
-      .select('*')
-      .eq('status', 'OPEN')
-      .order('created_at', { ascending: false })
-
-    if (error) {
-      console.error('Error fetching open repair requests:', error)
-      setOpenRequests([])
-    } else if (reqs && reqs.length > 0) {
-      const userIds = Array.from(new Set(reqs.map(r => r.user_id)))
-      const { data: profilesData } = await supabase
-        .from('profiles')
-        .select('uuid, full_name')
-        .in('uuid', userIds)
-
-      const profileMap = new Map()
-      profilesData?.forEach(p => profileMap.set(p.uuid, p.full_name))
-
-      const formatted = reqs.map(r => ({
-        ...r,
-        creator_name: profileMap.get(r.user_id) || 'Technician'
-      }))
-
-      setOpenRequests(formatted)
-    } else {
-      setOpenRequests([])
-    }
-  }
-
-  async function handleSelectRequest(req: any) {
-    setSelectedRequestId(req.id)
-    setSelectedRequestObj(req)
-    setStatusMessage(null)
-    setQueue([])
-    await loadScannedItemsForRequest(req.id)
-  }
-
-  async function loadScannedItemsForRequest(reqId: string) {
+  async function loadTechnicianScannedItems(techId: string) {
     const { data: items, error } = await supabase
       .from('repair_request_items')
       .select('*')
-      .eq('repair_request_id', reqId)
+      .eq('technician_id', techId)
       .order('created_at', { ascending: false })
 
     if (error) {
-      console.error('Error loading items:', error)
+      console.error('Error loading technician items:', error)
       setScannedItems([])
     } else {
       const serviceMap = new Map(services.map(s => [s.id, s.name]))
@@ -131,6 +95,7 @@ export default function RepairRequestPage() {
         const serviceNames = ids.map((id: string) => serviceMap.get(id) || 'Unknown Service')
 
         return {
+          id: item.id,
           imei: item.imei,
           services: serviceNames,
           time: new Date(item.created_at).toLocaleTimeString()
@@ -138,34 +103,6 @@ export default function RepairRequestPage() {
       })
       setScannedItems(formatted)
     }
-  }
-
-  async function handleCreateNewRequest() {
-    setActionLoading(true)
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      alert('You must be logged in.')
-      setActionLoading(false)
-      return
-    }
-
-    const { data: newReq, error } = await supabase.rpc('create_repair_request', {
-      p_user_id: user.id
-    })
-
-    if (error || !newReq) {
-      alert('Failed to create repair request: ' + (error?.message || 'Unknown error'))
-      setActionLoading(false)
-      return
-    }
-
-    await loadOpenRequests()
-    setSelectedRequestId(newReq.id)
-    setSelectedRequestObj(newReq)
-    setScannedItems([])
-    setQueue([])
-    setStatusMessage(null)
-    setActionLoading(false)
   }
 
   const filteredServices = services.filter(s =>
@@ -184,8 +121,8 @@ export default function RepairRequestPage() {
   async function handleScanSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!imeiInput.trim()) return
-    if (!selectedRequestId) {
-      alert('Please select or create an active Repair Request first.')
+    if (!technicianId) {
+      alert('Please select a technician first.')
       return
     }
 
@@ -197,20 +134,19 @@ export default function RepairRequestPage() {
       const { data: existingMatch, error: matchError } = await supabase
         .from('repair_request_items')
         .select('id')
-        .eq('repair_request_id', selectedRequestId)
+        .eq('technician_id', technicianId)
         .eq('imei', cleanImei)
         .maybeSingle()
 
       if (matchError || !existingMatch) {
-        setStatusMessage({ text: 'IMEI is not assigned in this Repair Request.', type: 'error' })
+        setStatusMessage({ text: 'IMEI is not assigned to this technician.', type: 'error' })
         return
       }
 
       const { error: deleteError } = await supabase
         .from('repair_request_items')
         .delete()
-        .eq('repair_request_id', selectedRequestId)
-        .eq('imei', cleanImei)
+        .eq('id', existingMatch.id)
 
       if (deleteError) {
         setStatusMessage({ text: `Error removing IMEI: ${deleteError.message}`, type: 'error' })
@@ -218,14 +154,10 @@ export default function RepairRequestPage() {
       }
 
       setScannedItems(prev => prev.filter(item => item.imei !== cleanImei))
-      setStatusMessage({ text: 'IMEI removed from current Repair Request', type: 'success' })
+      setStatusMessage({ text: 'IMEI removed from technician assignment', type: 'success' })
       return
     }
 
-    if (!technicianId) {
-      alert('Please select a technician.')
-      return
-    }
     if (selectedServices.length === 0) {
       alert('Please select at least one service before scanning.')
       return
@@ -235,7 +167,7 @@ export default function RepairRequestPage() {
     const alreadySaved = scannedItems.some(s => s.imei === cleanImei)
 
     if (alreadyInQueue || alreadySaved) {
-      setStatusMessage({ text: `⚠️ IMEI ${cleanImei} is already queued or saved in this session.`, type: 'info' })
+      setStatusMessage({ text: `⚠️ IMEI ${cleanImei} is already queued or saved for this technician.`, type: 'info' })
       setImeiInput('')
       if (imeiInputRef.current) imeiInputRef.current.focus()
       return
@@ -268,16 +200,6 @@ export default function RepairRequestPage() {
     setQueue(prev => prev.map(q => q.id === nextItem.id ? { ...q, status: 'Processing' } : q))
 
     try {
-      const { data: reqCheck, error: reqCheckErr } = await supabase
-        .from('repair_requests')
-        .select('status')
-        .eq('id', selectedRequestId)
-        .single()
-
-      if (reqCheckErr || !reqCheck || reqCheck.status !== 'OPEN') {
-        throw new Error('Repair Request is closed. Modifications are blocked.')
-      }
-
       const { data: activeCheck, error: activeErr } = await supabase
         .from('repair_request_items')
         .select('id')
@@ -303,10 +225,9 @@ export default function RepairRequestPage() {
       const serviceIdsArray = nextItem.services.map((s: any) => s.id)
       const { data: { user } } = await supabase.auth.getUser()
 
-      const { error: itemError } = await supabase
+      const { data: insertedItem, error: itemError } = await supabase
         .from('repair_request_items')
         .insert({
-          repair_request_id: selectedRequestId,
           technician_id: nextItem.technicianId,
           service_ids: serviceIdsArray,
           imei: nextItem.imei,
@@ -316,14 +237,29 @@ export default function RepairRequestPage() {
           current_status: 'Assigned',
           assigned_by: user ? user.id : null
         })
+        .select()
+        .single()
 
       if (itemError) {
         throw new Error(itemError.message)
       }
 
+      await supabase.from('imei_assignments').insert({
+        repair_request_item_id: insertedItem.id,
+        technician_id: nextItem.technicianId
+      })
+
+      await supabase.from('imei_lifecycle_events').insert({
+        repair_request_item_id: insertedItem.id,
+        technician_id: nextItem.technicianId,
+        event_type: 'Assigned',
+        event_date: new Date().toISOString().split('T')[0]
+      })
+
       setQueue(prev => prev.map(q => q.id === nextItem.id ? { ...q, status: 'Saved' } : q))
       
       setScannedItems(prev => [{
+        id: insertedItem.id,
         imei: nextItem.imei,
         services: nextItem.services.map((s: any) => s.name),
         time: nextItem.time
@@ -342,147 +278,28 @@ export default function RepairRequestPage() {
     setQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'Queued', errorMsg: undefined } : q))
   }
 
-  async function handleCloseRequest() {
-    if (!selectedRequestId || !selectedRequestObj) return
-
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      alert('You must be logged in.')
-      return
-    }
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
-
-    const isAdmin = profile?.role === 'admin'
-    const isCreator = selectedRequestObj.user_id === user.id
-
-    if (!isAdmin && !isCreator) {
-      alert('Permission Denied: Only the request creator or an admin can close this repair request.')
-      return
-    }
-
-    const pendingCount = queue.filter(q => q.status === 'Queued' || q.status === 'Processing').length
-    if (pendingCount > 0) {
-      alert(`Cannot close request while ${pendingCount} items are still processing or queued.`)
-      return
-    }
-
-    const { error } = await supabase
-      .from('repair_requests')
-      .update({ status: 'CLOSED', closed_at: new Date().toISOString() })
-      .eq('id', selectedRequestId)
-
-    if (error) {
-      alert(`Error closing request: ${error.message}`)
-      return
-    }
-
-    alert('Request closed successfully!')
-    setSelectedRequestId(null)
-    setSelectedRequestObj(null)
-    setScannedItems([])
-    setQueue([])
-    setStatusMessage(null)
-    await loadOpenRequests()
-  }
-
   if (loading) {
-    return <div className="p-8 text-center text-sm text-gray-500">Loading Repair Requests...</div>
-  }
-
-  if (!selectedRequestId) {
-    return (
-      <div className="max-w-4xl mx-auto space-y-6 p-6">
-        <div className="bg-white p-6 rounded-lg shadow-sm border flex flex-wrap justify-between items-center gap-4">
-          <div>
-            <h2 className="text-xl font-bold text-gray-800">Active Repair Requests Hub</h2>
-            <p className="text-sm text-gray-500 mt-1">Select any open request below to resume work, or create a new sequential batch.</p>
-          </div>
-          <button
-            onClick={handleCreateNewRequest}
-            disabled={actionLoading}
-            className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-2.5 rounded-lg text-sm font-medium shadow transition-all cursor-pointer disabled:opacity-50"
-          >
-            {actionLoading ? 'Creating...' : '+ CREATE NEW REQUEST'}
-          </button>
-        </div>
-
-        {fetchError && (
-          <div className="bg-red-50 text-red-600 p-4 rounded-lg border text-sm">
-            Database Error: {fetchError}
-          </div>
-        )}
-
-        <div className="bg-white border rounded-lg shadow-sm overflow-hidden">
-          <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
-            <h3 className="font-bold text-gray-900 text-sm">All Open Repair Requests</h3>
-            <span className="bg-slate-900 text-white text-xs px-2.5 py-0.5 rounded-full font-semibold">
-              {openRequests.length} Total
-            </span>
-          </div>
-          {openRequests.length === 0 ? (
-            <div className="p-8 text-center text-gray-400 text-sm">
-              No open repair requests found. Click <span className="font-semibold text-gray-700">Create New Request</span> to begin.
-            </div>
-          ) : (
-            <div className="divide-y">
-              {openRequests.map((req) => (
-                <div key={req.id} className="p-4 flex flex-wrap items-center justify-between gap-4 hover:bg-slate-50 transition-colors">
-                  <div>
-                    <span className="font-mono font-bold text-slate-900 text-base">{req.reference_number}</span>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      Created: {new Date(req.created_at).toLocaleString()} | Creator: <span className="font-medium text-gray-800">{req.creator_name}</span>
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleSelectRequest(req)}
-                    className="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-medium cursor-pointer transition-all shadow-sm"
-                  >
-                    [ SELECT & CONTINUE WORK ]
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    )
+    return <div className="p-8 text-center text-sm text-gray-500">Loading Technician Repair Hub...</div>
   }
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 p-6">
       <div className="bg-white p-6 rounded-lg shadow-sm border flex flex-wrap justify-between items-center gap-4">
         <div>
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => { setSelectedRequestId(null); setSelectedRequestObj(null); loadOpenRequests(); }}
-              className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer mr-2"
-            >
-              ← Back to All Requests
-            </button>
-            <span className="bg-amber-100 text-amber-800 text-xs px-3 py-1 rounded-full font-semibold">Active Session</span>
-          </div>
-          <h2 className="text-xl font-bold text-gray-800 mt-2">
-            Reference: <span className="font-mono text-slate-900">{selectedRequestObj?.reference_number}</span>
-          </h2>
-        </div>
-        <div className="flex items-center space-x-3">
-          <button
-            onClick={handleCloseRequest}
-            className="bg-red-600 hover:bg-red-700 text-white text-xs px-4 py-2 rounded-lg font-medium transition-colors cursor-pointer shadow"
-          >
-            Close Request
-          </button>
+          <h2 className="text-xl font-bold text-gray-800">Technician Repair Scanning Hub</h2>
+          <p className="text-sm text-gray-500 mt-1">Select a technician, pick services, and scan IMEIs continuously grouped by technician.</p>
         </div>
       </div>
 
+      {fetchError && (
+        <div className="bg-red-50 text-red-600 p-4 rounded-lg border text-sm">
+          Database Error: {fetchError}
+        </div>
+      )}
+
       <div className={`bg-white p-6 rounded-lg shadow-sm border grid grid-cols-1 md:grid-cols-2 gap-6 transition-opacity ${isRemoveMode ? 'opacity-50 pointer-events-none' : ''}`}>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Technician / Vendor</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Select Technician / Vendor</label>
           <select
             className="w-full bg-white text-gray-900 border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-slate-900 outline-none"
             value={technicianId}
@@ -613,7 +430,7 @@ export default function RepairRequestPage() {
         <form onSubmit={handleScanSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              {isRemoveMode ? 'Scan IMEI to Remove from This Request' : 'Scan or Type IMEI (Continuous High-Speed Mode)'}
+              {isRemoveMode ? 'Scan IMEI to Remove from Technician' : 'Scan or Type IMEI (Continuous High-Speed Mode)'}
             </label>
             <input
               ref={imeiInputRef}
@@ -686,14 +503,14 @@ export default function RepairRequestPage() {
 
         <div className="mt-6">
           <div className="flex justify-between items-center mb-3">
-            <h3 className="font-semibold text-gray-800">Successfully Saved IMEIs in this Request</h3>
+            <h3 className="font-semibold text-gray-800">Successfully Saved IMEIs for this Technician</h3>
             <span className="bg-slate-900 text-white text-xs px-3 py-1 rounded-full font-bold font-mono">
               Total Saved: {scannedItems.length}
             </span>
           </div>
           <div className="border rounded-lg overflow-hidden">
             {scannedItems.length === 0 ? (
-              <p className="p-6 text-center text-sm text-gray-400">No IMEIs saved yet in this request session.</p>
+              <p className="p-6 text-center text-sm text-gray-400">No IMEIs saved yet for this technician.</p>
             ) : (
               <table className="w-full text-left text-sm">
                 <thead className="bg-gray-50 border-b">

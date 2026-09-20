@@ -74,7 +74,6 @@ export default function RepairReceivePage() {
       return
     }
 
-    // Prevent duplicate active queue entry for the same IMEI
     const alreadyQueued = queueRef.current.some(q => q.imei === cleanImei && (q.status === 'Queued' || q.status === 'Processing'))
     if (alreadyQueued) {
       setImeiInput('')
@@ -97,6 +96,69 @@ export default function RepairReceivePage() {
     }
   }
 
+  async function updateTechnicianDailyStock(technicianId: string, computedStatus: string, isRejected: boolean) {
+    if (!technicianId) return
+    const todayStr = new Date().toISOString().split('T')[0]
+
+    // 1. Check if daily stock row exists for this technician today
+    const { data: existingRecords, error: fetchError } = await supabase
+      .from('daily_technician_stock')
+      .select('*')
+      .eq('technician_id', technicianId)
+      .eq('stock_date', todayStr)
+      .limit(1)
+
+    if (fetchError) {
+      console.error('Error fetching daily technician stock:', fetchError.message)
+      return
+    }
+
+    let currentRecord = existingRecords && existingRecords.length > 0 ? existingRecords[0] : null
+
+    // Determine increment mappings
+    const incReceivedBack = 1
+    const incRepaired = (!isRejected && computedStatus === 'Repaired') ? 1 : 0
+    const incReworked = (!isRejected && computedStatus === 'Reworked') ? 1 : 0
+    const incOpened = (!isRejected && computedStatus === 'Opened') ? 1 : 0
+    const incChecked = (!isRejected && computedStatus === 'Checked') ? 1 : 0
+    const incClosed = (!isRejected && computedStatus === 'Closed') ? 1 : 0
+    const incRejected = isRejected ? 1 : 0
+
+    if (currentRecord) {
+      // Update existing record
+      const newClosingPending = Math.max(0, (currentRecord.closing_pending || 0) - 1)
+      await supabase
+        .from('daily_technician_stock')
+        .update({
+          received_back: (currentRecord.received_back || 0) + incReceivedBack,
+          repaired: (currentRecord.repaired || 0) + incRepaired,
+          reworked: (currentRecord.reworked || 0) + incReworked,
+          opened: (currentRecord.opened || 0) + incOpened,
+          checked: (currentRecord.checked || 0) + incChecked,
+          closed: (currentRecord.closed || 0) + incClosed,
+          rejected_return: (currentRecord.rejected_return || 0) + incRejected,
+          closing_pending: newClosingPending
+        })
+        .eq('id', currentRecord.id)
+    } else {
+      // Insert new record for today
+      await supabase
+        .from('daily_technician_stock')
+        .insert({
+          technician_id: technicianId,
+          stock_date: todayStr,
+          received_back: incReceivedBack,
+          repaired: incRepaired,
+          reworked: incReworked,
+          opened: incOpened,
+          checked: incChecked,
+          closed: incClosed,
+          rejected_return: incRejected,
+          closing_pending: 0
+        })
+    }
+  }
+
   async function processQueue() {
     if (processingRef.current) return
     
@@ -115,7 +177,7 @@ export default function RepairReceivePage() {
         .from('repair_request_items')
         .select(`
           *,
-          technicians_vendors (name, type),
+          technicians_vendors (id, name, type),
           repair_requests (reference_number, user_id, status)
         `)
         .eq('imei', nextItem.imei)
@@ -137,7 +199,8 @@ export default function RepairReceivePage() {
         : (itemData.service_id ? [itemData.service_id] : [])
 
       const serviceNames = ids.map((id: string) => servicesMap.get(id) || 'Unknown Service')
-      const computedStatus = nextItem.mode === 'reject' ? 'Rejected' : determineStatus(serviceNames)
+      const isRejectedMode = nextItem.mode === 'reject'
+      const computedStatus = isRejectedMode ? 'Rejected' : determineStatus(serviceNames)
 
       const updatePayload: any = {
         current_status: computedStatus,
@@ -167,6 +230,11 @@ export default function RepairReceivePage() {
         rejection_reason: nextItem.rejectionReason,
         performed_by: user.id
       }])
+
+      // 4. Automatically update Technician Daily Stock Counters
+      if (itemData.technician_id) {
+        await updateTechnicianDailyStock(itemData.technician_id, computedStatus, isRejectedMode)
+      }
 
       const successDetails = {
         referenceNo: itemData.repair_requests?.reference_number,
@@ -198,7 +266,7 @@ export default function RepairReceivePage() {
     <div className="max-w-3xl space-y-6">
       <div className="bg-white p-6 rounded-lg shadow-sm border">
         <h2 className="text-xl font-bold text-gray-900">Repair Receive & Blazing-Fast Continuous Scanning</h2>
-        <p className="text-sm text-gray-600">Scan items back-to-back instantly without waiting for network responses.</p>
+        <p className="text-sm text-gray-600">Scan items back-to-back instantly. Automatically updates daily technician stock metrics.</p>
       </div>
 
       <div className="bg-white p-4 rounded-lg shadow-sm border flex items-center space-x-6">
