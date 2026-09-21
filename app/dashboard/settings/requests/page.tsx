@@ -10,6 +10,7 @@ export default function DailyTechnicianStockPage() {
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0])
   const [technicians, setTechnicians] = useState<any[]>([])
   const [stockRecords, setStockRecords] = useState<any[]>([])
+  const [prevStockMap, setPrevStockMap] = useState<Map<string, any>>(new Map())
   const [dateItems, setDateItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
@@ -22,7 +23,6 @@ export default function DailyTechnicianStockPage() {
     setLoading(true)
     setErrorMsg('')
 
-    // 1. Fetch Technicians
     const { data: techData, error: techError } = await supabase
       .from('technicians_vendors')
       .select('id, name, type')
@@ -37,7 +37,15 @@ export default function DailyTechnicianStockPage() {
     setTechnicians(techs)
     const techMap = new Map(techs.map(t => [t.id, t]))
 
-    // 2. Fetch daily stock records for the selected date
+    // Calculate previous date to pull closing pending as opening stock
+    const prevDate = new Date(new Date(selectedDate).getTime() - 86400000).toISOString().split('T')[0]
+    const { data: prevStockData } = await supabase
+      .from('daily_technician_stock')
+      .select('*')
+      .eq('stock_date', prevDate)
+
+    setPrevStockMap(new Map((prevStockData || []).map(s => [s.technician_id, s])))
+
     const { data: stockData, error: stockError } = await supabase
       .from('daily_technician_stock')
       .select('*')
@@ -48,7 +56,6 @@ export default function DailyTechnicianStockPage() {
     }
     setStockRecords(stockData || [])
 
-    // 3. Fetch repair request items for the selected date
     const startOfDay = `${selectedDate}T00:00:00`
     const endOfDay = `${selectedDate}T23:59:59`
 
@@ -84,8 +91,11 @@ export default function DailyTechnicianStockPage() {
   const isDayLocked = stockRecords.length > 0 && stockRecords.every(s => s.locked_at !== null)
 
   const rowsWithMetrics = technicians.map(tech => {
+    const prevStock = prevStockMap.get(tech.id)
+    const defaultOpening = prevStock ? (prevStock.closing_pending || 0) : 0
+
     const stock = stockMap.get(tech.id) || {
-      opening_pending: 0,
+      opening_pending: defaultOpening,
       newly_given: 0,
       repaired: 0,
       reworked: 0,
@@ -98,15 +108,15 @@ export default function DailyTechnicianStockPage() {
       locked_at: null
     }
 
+    const openingPending = stock.opening_pending > 0 ? stock.opening_pending : defaultOpening
     const completedCount = (stock.repaired || 0) + (stock.reworked || 0) + (stock.opened || 0) + (stock.checked || 0) + (stock.closed || 0) + (stock.rejected_return || 0)
 
     let newlyGiven = stock.newly_given > 0 ? stock.newly_given : (assignedItemCounts.get(tech.id) || 0)
-    let totalGiven = (stock.opening_pending || 0) + newlyGiven
+    let totalGiven = openingPending + newlyGiven
 
-    // Ensure Given is at least equal to completed items if no explicit newly given count was logged
     if (totalGiven < completedCount) {
       totalGiven = completedCount
-      newlyGiven = totalGiven - (stock.opening_pending || 0)
+      newlyGiven = totalGiven - openingPending
     }
     
     const pending = stock.closing_pending !== undefined && stock.closing_pending !== null && stock.closing_pending > 0
@@ -118,6 +128,7 @@ export default function DailyTechnicianStockPage() {
     return {
       ...tech,
       ...stock,
+      opening_pending: openingPending,
       newly_given: newlyGiven,
       totalGiven,
       closing_pending: pending,
@@ -129,36 +140,47 @@ export default function DailyTechnicianStockPage() {
   const matchedCount = requiredTechs.filter(r => r.physical_verified).length
   const allRequiredMatched = requiredTechs.length > 0 && matchedCount === requiredTechs.length
 
-  async function toggleVerification(techId: string, currentStatus: boolean) {
+  async function toggleVerification(techId: string, currentStatus: boolean, calculatedGiven: number, calculatedPending: number, calculatedOpening: number) {
     if (isDayLocked) return
 
-    const existing = stockMap.get(techId)
     const newStatus = !currentStatus
+    const existing = stockMap.get(techId)
 
-    if (existing) {
+    if (existing?.id) {
       const { error } = await supabase
         .from('daily_technician_stock')
         .update({
           physical_verified: newStatus,
-          verified_at: newStatus ? new Date().toISOString() : null
+          verified_at: newStatus ? new Date().toISOString() : null,
+          opening_pending: calculatedOpening,
+          newly_given: calculatedGiven,
+          closing_pending: calculatedPending
         })
         .eq('id', existing.id)
 
-      if (error) alert('Error updating verification: ' + error.message)
-      else fetchData()
+      if (error) {
+        alert('Error updating verification: ' + error.message)
+        return
+      }
     } else {
       const { error } = await supabase
         .from('daily_technician_stock')
         .insert({
           technician_id: techId,
           stock_date: selectedDate,
+          opening_pending: calculatedOpening,
+          newly_given: calculatedGiven,
+          closing_pending: calculatedPending,
           physical_verified: newStatus,
           verified_at: newStatus ? new Date().toISOString() : null
         })
 
-      if (error) alert('Error creating verification record: ' + error.message)
-      else fetchData()
+      if (error) {
+        alert('Error creating verification record: ' + error.message)
+        return
+      }
     }
+    fetchData()
   }
 
   async function handleLockDay() {
@@ -205,9 +227,10 @@ export default function DailyTechnicianStockPage() {
     doc.text(`Date: ${selectedDate} | Status: ${isDayLocked ? 'LOCKED & IMMUTABLE' : 'OPEN'}`, 14, 28)
     doc.text(`Verification Progress: ${matchedCount} / ${requiredTechs.length} Technicians Matched`, 14, 34)
 
-    const tableColumn = ['Technician', 'Given', 'Repaired', 'Reworked', 'Opened', 'Checked', 'Closed', 'Rejected', 'Pending', 'Verification']
+    const tableColumn = ['Technician', 'Opening', 'Given', 'Repaired', 'Reworked', 'Opened', 'Checked', 'Closed', 'Rejected', 'Pending', 'Verification']
     const tableRows = rowsWithMetrics.map(r => [
       r.name,
+      r.opening_pending,
       r.totalGiven,
       r.repaired,
       r.reworked,
@@ -277,6 +300,7 @@ export default function DailyTechnicianStockPage() {
             <thead className="bg-slate-900 text-white uppercase font-bold">
               <tr>
                 <th className="p-4">Technician</th>
+                <th className="p-4 text-center">Opening</th>
                 <th className="p-4 text-center">Given</th>
                 <th className="p-4 text-center">Repaired</th>
                 <th className="p-4 text-center">Reworked</th>
@@ -295,6 +319,7 @@ export default function DailyTechnicianStockPage() {
                     {row.name}
                     {!row.isRequired && <span className="ml-2 text-[10px] text-gray-400 font-normal">(Inactive)</span>}
                   </td>
+                  <td className="p-4 text-center font-mono text-slate-600">{row.opening_pending}</td>
                   <td className="p-4 text-center font-mono font-bold text-slate-900">{row.totalGiven}</td>
                   <td className="p-4 text-center font-mono font-bold text-emerald-600">{row.repaired}</td>
                   <td className="p-4 text-center font-mono text-gray-600">{row.reworked}</td>
@@ -307,7 +332,7 @@ export default function DailyTechnicianStockPage() {
                     {row.isRequired ? (
                       <button
                         disabled={isDayLocked}
-                        onClick={() => toggleVerification(row.id, row.physical_verified)}
+                        onClick={() => toggleVerification(row.id, row.physical_verified, row.newly_given, row.closing_pending, row.opening_pending)}
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                           row.physical_verified
                             ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200'

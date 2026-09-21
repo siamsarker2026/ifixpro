@@ -42,11 +42,12 @@ export default function TraceRepairHistoryPage() {
       })
     }
 
+    // Explicit foreign key constraint specified here to fix the multiple relationship error
     const { data, error } = await supabase
       .from('repair_request_items')
       .select(`
         *,
-        technicians_vendors (name, type),
+        technicians_vendors!repair_request_items_technician_id_fkey (name, type),
         repair_requests (reference_number, status, created_at, user_id)
       `)
       .eq('imei', imeiInput.trim())

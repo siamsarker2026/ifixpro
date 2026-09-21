@@ -172,12 +172,12 @@ export default function RepairReceivePage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Session expired. Please log in.')
 
-      // 1. Search for latest item by IMEI
+      // 1. Search for latest item by IMEI (Explicit foreign key specified to fix ambiguity)
       const { data, error } = await supabase
         .from('repair_request_items')
         .select(`
           *,
-          technicians_vendors (id, name, type),
+          technicians_vendors!repair_request_items_technician_id_fkey (id, name, type),
           repair_requests (reference_number, user_id, status)
         `)
         .eq('imei', nextItem.imei)
