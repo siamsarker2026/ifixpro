@@ -10,6 +10,7 @@ export default function DailyTechnicianStockPage() {
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0])
   const [technicians, setTechnicians] = useState<any[]>([])
   const [stockRecords, setStockRecords] = useState<any[]>([])
+  const [dateItems, setDateItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
 
@@ -21,9 +22,10 @@ export default function DailyTechnicianStockPage() {
     setLoading(true)
     setErrorMsg('')
 
+    // 1. Fetch Technicians
     const { data: techData, error: techError } = await supabase
       .from('technicians_vendors')
-      .select('id, name')
+      .select('id, name, type')
       .order('name', { ascending: true })
 
     if (techError) {
@@ -31,8 +33,11 @@ export default function DailyTechnicianStockPage() {
       setLoading(false)
       return
     }
-    setTechnicians(techData || [])
+    const techs = techData || []
+    setTechnicians(techs)
+    const techMap = new Map(techs.map(t => [t.id, t]))
 
+    // 2. Fetch daily stock records for the selected date
     const { data: stockData, error: stockError } = await supabase
       .from('daily_technician_stock')
       .select('*')
@@ -41,36 +46,81 @@ export default function DailyTechnicianStockPage() {
     if (stockError) {
       setErrorMsg(stockError.message)
     }
-
     setStockRecords(stockData || [])
+
+    // 3. Fetch repair request items for the selected date
+    const startOfDay = `${selectedDate}T00:00:00`
+    const endOfDay = `${selectedDate}T23:59:59`
+
+    const { data: itemsData, error: itemsError } = await supabase
+      .from('repair_request_items')
+      .select('*')
+      .gte('created_at', startOfDay)
+      .lte('created_at', endOfDay)
+
+    if (itemsError) {
+      console.error(itemsError.message)
+      setDateItems([])
+    } else {
+      const processedItems = (itemsData || []).map(item => ({
+        ...item,
+        technicians_vendors: techMap.get(item.technician_id) || { name: 'Unassigned', type: '' }
+      }))
+      setDateItems(processedItems)
+    }
+
     setLoading(false)
   }
 
   const stockMap = new Map(stockRecords.map(s => [s.technician_id, s]))
+  
+  const assignedItemCounts = new Map<string, number>()
+  dateItems.forEach(item => {
+    if (item.technician_id) {
+      assignedItemCounts.set(item.technician_id, (assignedItemCounts.get(item.technician_id) || 0) + 1)
+    }
+  })
+
   const isDayLocked = stockRecords.length > 0 && stockRecords.every(s => s.locked_at !== null)
 
   const rowsWithMetrics = technicians.map(tech => {
     const stock = stockMap.get(tech.id) || {
       opening_pending: 0,
       newly_given: 0,
-      received_back: 0,
-      rejected_return: 0,
-      transferred: 0,
       repaired: 0,
       reworked: 0,
       opened: 0,
       checked: 0,
       closed: 0,
+      rejected_return: 0,
       closing_pending: 0,
       physical_verified: false,
       locked_at: null
     }
 
-    const isRequired = (stock.opening_pending > 0 || stock.newly_given > 0 || stock.repaired > 0 || stock.closed > 0 || stock.closing_pending > 0)
+    const completedCount = (stock.repaired || 0) + (stock.reworked || 0) + (stock.opened || 0) + (stock.checked || 0) + (stock.closed || 0) + (stock.rejected_return || 0)
+
+    let newlyGiven = stock.newly_given > 0 ? stock.newly_given : (assignedItemCounts.get(tech.id) || 0)
+    let totalGiven = (stock.opening_pending || 0) + newlyGiven
+
+    // Ensure Given is at least equal to completed items if no explicit newly given count was logged
+    if (totalGiven < completedCount) {
+      totalGiven = completedCount
+      newlyGiven = totalGiven - (stock.opening_pending || 0)
+    }
+    
+    const pending = stock.closing_pending !== undefined && stock.closing_pending !== null && stock.closing_pending > 0
+      ? stock.closing_pending 
+      : Math.max(0, totalGiven - completedCount)
+
+    const isRequired = totalGiven > 0 || completedCount > 0 || pending > 0
 
     return {
       ...tech,
       ...stock,
+      newly_given: newlyGiven,
+      totalGiven,
+      closing_pending: pending,
       isRequired
     }
   })
@@ -127,29 +177,26 @@ export default function DailyTechnicianStockPage() {
     }
   }
 
-  // Export to Excel
   function exportToExcel() {
-    const dataToExport = rowsWithMetrics.map(r => ({
-      'Technician': r.name,
-      'Required': r.isRequired ? 'Yes' : 'No',
-      'Given': r.newly_given,
-      'Repaired': r.repaired,
-      'Reworked': r.reworked,
-      'Opened': r.opened,
-      'Checked': r.checked,
-      'Closed': r.closed,
-      'Rejected': r.rejected_return,
-      'Pending': r.closing_pending,
-      'Physical Verified': r.physical_verified ? 'Matched' : 'Pending'
+    const dataToExport = dateItems.map(item => ({
+      'Technician / Vendor': item.technicians_vendors?.name || 'Unassigned',
+      'IMEI': item.imei,
+      'Model': item.model,
+      'Storage (GB)': item.storage_gb,
+      'Color': item.color,
+      'Assigned By': item.assigned_by || 'lab1',
+      'Status': item.current_status,
+      'Assigned At': item.created_at ? new Date(item.created_at).toLocaleString() : '',
+      'Received At': item.received_at ? new Date(item.received_at).toLocaleString() : '—',
+      'Rejection Reason': item.rejection_reason || ''
     }))
 
     const worksheet = XLSX.utils.json_to_sheet(dataToExport)
     const workbook = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(workbook, worksheet, `Stock_${selectedDate}`)
-    XLSX.writeFile(workbook, `Technician_Stock_Matrix_${selectedDate}.xlsx`)
+    XLSX.utils.book_append_sheet(workbook, worksheet, `Items_${selectedDate}`)
+    XLSX.writeFile(workbook, `Repair_Items_Details_${selectedDate}.xlsx`)
   }
 
-  // Download PDF Summary
   function downloadPDF() {
     const doc = new jsPDF()
     doc.setFontSize(16)
@@ -161,7 +208,7 @@ export default function DailyTechnicianStockPage() {
     const tableColumn = ['Technician', 'Given', 'Repaired', 'Reworked', 'Opened', 'Checked', 'Closed', 'Rejected', 'Pending', 'Verification']
     const tableRows = rowsWithMetrics.map(r => [
       r.name,
-      r.newly_given,
+      r.totalGiven,
       r.repaired,
       r.reworked,
       r.opened,
@@ -187,7 +234,6 @@ export default function DailyTechnicianStockPage() {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 p-6">
-      {/* Header & Date Selector & Exports */}
       <div className="bg-white p-6 rounded-lg shadow-sm border flex flex-wrap justify-between items-center gap-4">
         <div>
           <h2 className="text-xl font-bold text-gray-900">Technician Daily Operational & Stock Matrix</h2>
@@ -198,7 +244,7 @@ export default function DailyTechnicianStockPage() {
             onClick={exportToExcel}
             className="px-3 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow cursor-pointer"
           >
-            Export Excel
+            Export Excel (IMEI Details)
           </button>
           <button
             onClick={downloadPDF}
@@ -220,13 +266,11 @@ export default function DailyTechnicianStockPage() {
 
       {errorMsg && <div className="p-4 bg-red-50 text-red-700 rounded-lg border text-sm">Database Error: {errorMsg}</div>}
 
-      {/* Global Status Banner */}
       <div className={`p-4 rounded-lg border flex justify-between items-center text-xs font-bold ${isDayLocked ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>
         <span>{isDayLocked ? `🔒 This date (${selectedDate}) is locked and immutable.` : `🔓 Active Open Day — Pending Physical Verification & Lock.`}</span>
         <span className="font-mono">{matchedCount} / {requiredTechs.length} Required Technicians Matched</span>
       </div>
 
-      {/* Performance Matrix Table */}
       <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs whitespace-nowrap">
@@ -251,7 +295,7 @@ export default function DailyTechnicianStockPage() {
                     {row.name}
                     {!row.isRequired && <span className="ml-2 text-[10px] text-gray-400 font-normal">(Inactive)</span>}
                   </td>
-                  <td className="p-4 text-center font-mono font-bold text-slate-900">{row.newly_given}</td>
+                  <td className="p-4 text-center font-mono font-bold text-slate-900">{row.totalGiven}</td>
                   <td className="p-4 text-center font-mono font-bold text-emerald-600">{row.repaired}</td>
                   <td className="p-4 text-center font-mono text-gray-600">{row.reworked}</td>
                   <td className="p-4 text-center font-mono text-gray-600">{row.opened}</td>
@@ -283,7 +327,6 @@ export default function DailyTechnicianStockPage() {
         </div>
       </div>
 
-      {/* Footer Action Bar */}
       {!isDayLocked && (
         <div className="bg-white p-6 rounded-lg shadow-sm border flex justify-between items-center">
           <span className="text-xs font-bold text-gray-700">
