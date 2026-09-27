@@ -6,6 +6,18 @@ import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
+// Asia/Dubai is a fixed UTC+4 offset (no DST), so the day boundary in Dubai
+// local time can be computed as a constant offset from UTC without a TZ lib.
+const DUBAI_OFFSET_MS = 4 * 60 * 60 * 1000
+
+function getDubaiDayRangeUTC(dateStr: string) {
+  const [year, month, day] = dateStr.split('-').map(Number)
+  // Midnight in Dubai for the given date, expressed as a UTC instant.
+  const startUTC = new Date(Date.UTC(year, month - 1, day, 0, 0, 0) - DUBAI_OFFSET_MS)
+  const endUTC = new Date(startUTC.getTime() + 24 * 60 * 60 * 1000)
+  return { startISO: startUTC.toISOString(), endISO: endUTC.toISOString() }
+}
+
 export default function DailyTechnicianStockPage() {
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0])
   const [technicians, setTechnicians] = useState<any[]>([])
@@ -14,6 +26,7 @@ export default function DailyTechnicianStockPage() {
   const [dateItems, setDateItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
+  const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>('ALL')
 
   useEffect(() => {
     fetchData()
@@ -37,7 +50,24 @@ export default function DailyTechnicianStockPage() {
     setTechnicians(techs)
     const techMap = new Map(techs.map(t => [t.id, t]))
 
-    // Calculate previous date to pull closing pending as opening stock
+    // Fetch profiles to resolve UUIDs to names
+    const { data: profilesData } = await supabase.from('profiles').select('*')
+    const profileMap: { [key: string]: string } = {}
+    if (profilesData) {
+      profilesData.forEach((p: any) => {
+        const name = p.full_name || p.name || p.email
+        if (p.id) profileMap[p.id] = name
+        // profiles may link to auth users via `uuid` rather than `id`
+        // (see dashboard/layout.tsx) — index both defensively.
+        if (p.uuid) profileMap[p.uuid] = name
+        if (p.email) profileMap[p.email] = name
+      })
+    }
+
+    // Service names: repair_request_items.service_ids is an array of UUIDs.
+    const { data: servicesData } = await supabase.from('services').select('id, name')
+    const serviceMap = new Map((servicesData || []).map((s: any) => [s.id, s.name]))
+
     const prevDate = new Date(new Date(selectedDate).getTime() - 86400000).toISOString().split('T')[0]
     const { data: prevStockData } = await supabase
       .from('daily_technician_stock')
@@ -56,23 +86,48 @@ export default function DailyTechnicianStockPage() {
     }
     setStockRecords(stockData || [])
 
-    const startOfDay = `${selectedDate}T00:00:00`
-    const endOfDay = `${selectedDate}T23:59:59`
+    const { startISO, endISO } = getDubaiDayRangeUTC(selectedDate)
 
     const { data: itemsData, error: itemsError } = await supabase
       .from('repair_request_items')
-      .select('*')
-      .gte('created_at', startOfDay)
-      .lte('created_at', endOfDay)
+      .select(`
+        *,
+        repair_requests (user_id)
+      `)
+      .gte('created_at', startISO)
+      .lt('created_at', endISO)
 
     if (itemsError) {
       console.error(itemsError.message)
       setDateItems([])
     } else {
-      const processedItems = (itemsData || []).map(item => ({
-        ...item,
-        technicians_vendors: techMap.get(item.technician_id) || { name: 'Unassigned', type: '' }
-      }))
+      const processedItems = (itemsData || []).map(item => {
+        const rawAssigned = item.assigned_by || item.repair_requests?.user_id || item.user_id
+        const rawReceived = item.received_by
+
+        // Never fall back to the currently logged-in user for a historical
+        // audit field, and never leak a raw UUID into the UI.
+        const resolvedAssigned = rawAssigned ? (profileMap[rawAssigned] || 'Unknown User') : 'Unknown User'
+        const resolvedReceived = item.received_at
+          ? (rawReceived ? (profileMap[rawReceived] || 'Unknown User') : 'Unknown User')
+          : '—'
+
+        const serviceIds: string[] = item.service_ids || []
+        const resolvedServices = serviceIds.length > 0
+          ? serviceIds.map((id: string) => serviceMap.get(id) || 'Unknown Service').join(' + ')
+          : '—'
+
+        const displayStatus = item.received_at ? (item.current_status || 'Repaired') : 'Pending'
+
+        return {
+          ...item,
+          technicians_vendors: techMap.get(item.technician_id) || { name: 'Unassigned', type: '' },
+          resolved_assigned_by: resolvedAssigned,
+          resolved_received_by: resolvedReceived,
+          resolved_services: resolvedServices,
+          display_status: displayStatus
+        }
+      })
       setDateItems(processedItems)
     }
 
@@ -95,6 +150,7 @@ export default function DailyTechnicianStockPage() {
     const defaultOpening = prevStock ? (prevStock.closing_pending || 0) : 0
 
     const stock = stockMap.get(tech.id) || {
+      id: null,
       opening_pending: defaultOpening,
       newly_given: 0,
       repaired: 0,
@@ -127,6 +183,8 @@ export default function DailyTechnicianStockPage() {
 
     return {
       ...tech,
+      id: tech.id, // Explicitly guarantee row.id is always the technician ID
+      stock_record_id: stock.id, // Store stock record primary key separately
       ...stock,
       opening_pending: openingPending,
       newly_given: newlyGiven,
@@ -140,13 +198,32 @@ export default function DailyTechnicianStockPage() {
   const matchedCount = requiredTechs.filter(r => r.physical_verified).length
   const allRequiredMatched = requiredTechs.length > 0 && matchedCount === requiredTechs.length
 
-  async function toggleVerification(techId: string, currentStatus: boolean, calculatedGiven: number, calculatedPending: number, calculatedOpening: number) {
+  // Single source of rows for the Repair Request List table, its totals, and
+  // the Excel export — filtering never creates a second, divergent dataset.
+  const filteredDateItems = selectedTechnicianId === 'ALL'
+    ? dateItems
+    : dateItems.filter(item => item.technician_id === selectedTechnicianId)
+
+  const listTotals = filteredDateItems.reduce((acc, item) => {
+    acc.given += 1
+    switch (item.display_status) {
+      case 'Pending': acc.pending += 1; break
+      case 'Repaired': acc.repaired += 1; break
+      case 'Reworked': acc.reworked += 1; break
+      case 'Opened': acc.opened += 1; break
+      case 'Checked': acc.checked += 1; break
+      case 'Closed': acc.closed += 1; break
+      case 'Rejected': acc.rejected += 1; break
+    }
+    return acc
+  }, { given: 0, repaired: 0, reworked: 0, opened: 0, checked: 0, closed: 0, rejected: 0, pending: 0 })
+
+  async function toggleVerification(techId: string, stockRecordId: string | null, currentStatus: boolean, calculatedGiven: number, calculatedPending: number, calculatedOpening: number) {
     if (isDayLocked) return
 
     const newStatus = !currentStatus
-    const existing = stockMap.get(techId)
 
-    if (existing?.id) {
+    if (stockRecordId) {
       const { error } = await supabase
         .from('daily_technician_stock')
         .update({
@@ -156,7 +233,7 @@ export default function DailyTechnicianStockPage() {
           newly_given: calculatedGiven,
           closing_pending: calculatedPending
         })
-        .eq('id', existing.id)
+        .eq('id', stockRecordId)
 
       if (error) {
         alert('Error updating verification: ' + error.message)
@@ -200,23 +277,34 @@ export default function DailyTechnicianStockPage() {
   }
 
   function exportToExcel() {
-    const dataToExport = dateItems.map(item => ({
-      'Technician / Vendor': item.technicians_vendors?.name || 'Unassigned',
-      'IMEI': item.imei,
-      'Model': item.model,
-      'Storage (GB)': item.storage_gb,
-      'Color': item.color,
-      'Assigned By': item.assigned_by || 'lab1',
-      'Status': item.current_status,
-      'Assigned At': item.created_at ? new Date(item.created_at).toLocaleString() : '',
-      'Received At': item.received_at ? new Date(item.received_at).toLocaleString() : '—',
-      'Rejection Reason': item.rejection_reason || ''
-    }))
+    // Exports exactly the rows currently visible in the Repair Request List
+    // table below (same selectedDate, same technician filter) — never a
+    // separately-fetched or stale dataset.
+    const dataToExport = filteredDateItems.map(item => {
+      return {
+        'Technician / Vendor': item.technicians_vendors?.name || 'Unassigned',
+        'IMEI': item.imei,
+        'Model': item.model,
+        'Storage (GB)': item.storage_gb,
+        'Color': item.color,
+        'Service': item.resolved_services || '—',
+        'Assigned By': item.resolved_assigned_by,
+        'Assigned At': item.created_at ? new Date(item.created_at).toLocaleString() : '',
+        'Status': item.display_status,
+        'Received By': item.resolved_received_by,
+        'Received At': item.received_at ? new Date(item.received_at).toLocaleString() : '—',
+        'Rejection Reason': item.rejection_reason || ''
+      }
+    })
+
+    const techSuffix = selectedTechnicianId === 'ALL'
+      ? ''
+      : `_${(technicians.find(t => t.id === selectedTechnicianId)?.name || 'Technician').replace(/\s+/g, '')}`
 
     const worksheet = XLSX.utils.json_to_sheet(dataToExport)
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, worksheet, `Items_${selectedDate}`)
-    XLSX.writeFile(workbook, `Repair_Items_Details_${selectedDate}.xlsx`)
+    XLSX.writeFile(workbook, `Repair_Items_Details_${selectedDate}${techSuffix}.xlsx`)
   }
 
   function downloadPDF() {
@@ -242,12 +330,31 @@ export default function DailyTechnicianStockPage() {
       r.physical_verified ? 'Matched' : 'Pending'
     ])
 
+    const totals = rowsWithMetrics.reduce((acc, r) => {
+      acc.opening += r.opening_pending || 0
+      acc.given += r.totalGiven || 0
+      acc.repaired += r.repaired || 0
+      acc.reworked += r.reworked || 0
+      acc.opened += r.opened || 0
+      acc.checked += r.checked || 0
+      acc.closed += r.closed || 0
+      acc.rejected += r.rejected_return || 0
+      acc.pending += r.closing_pending || 0
+      return acc
+    }, { opening: 0, given: 0, repaired: 0, reworked: 0, opened: 0, checked: 0, closed: 0, rejected: 0, pending: 0 })
+
     autoTable(doc, {
       head: [tableColumn],
       body: tableRows,
+      foot: [[
+        'TOTAL', totals.opening, totals.given, totals.repaired, totals.reworked,
+        totals.opened, totals.checked, totals.closed, totals.rejected, totals.pending,
+        `${matchedCount}/${requiredTechs.length}`
+      ]],
       startY: 42,
       styles: { fontSize: 8 },
-      headStyles: { fillColor: [15, 23, 42] }
+      headStyles: { fillColor: [15, 23, 42] },
+      footStyles: { fillColor: [226, 232, 240], textColor: [15, 23, 42], fontStyle: 'bold' }
     })
 
     doc.save(`Daily_Stock_Summary_${selectedDate}.pdf`)
@@ -275,6 +382,19 @@ export default function DailyTechnicianStockPage() {
           >
             Download PDF
           </button>
+          <div className="flex items-center gap-2 border-l pl-3">
+            <label className="text-xs font-bold text-gray-700">Technician:</label>
+            <select
+              value={selectedTechnicianId}
+              onChange={(e) => setSelectedTechnicianId(e.target.value)}
+              className="px-3 py-2 text-xs border rounded-lg font-semibold focus:outline-none focus:ring-2 focus:ring-slate-900 bg-white"
+            >
+              <option value="ALL">All Technicians</option>
+              {technicians.map((tech) => (
+                <option key={tech.id} value={tech.id}>{tech.name}</option>
+              ))}
+            </select>
+          </div>
           <div className="flex items-center gap-2 border-l pl-3">
             <label className="text-xs font-bold text-gray-700">Date:</label>
             <input
@@ -332,7 +452,7 @@ export default function DailyTechnicianStockPage() {
                     {row.isRequired ? (
                       <button
                         disabled={isDayLocked}
-                        onClick={() => toggleVerification(row.id, row.physical_verified, row.newly_given, row.closing_pending, row.opening_pending)}
+                        onClick={() => toggleVerification(row.id, row.stock_record_id, row.physical_verified, row.newly_given, row.closing_pending, row.opening_pending)}
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                           row.physical_verified
                             ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200'
@@ -349,6 +469,78 @@ export default function DailyTechnicianStockPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
+        <div className="p-4 border-b flex justify-between items-center">
+          <h3 className="font-bold text-gray-900 text-sm">
+            Repair Request List — IMEIs Assigned on {selectedDate}
+            {selectedTechnicianId !== 'ALL' && (
+              <span className="font-normal text-gray-500"> · {technicians.find(t => t.id === selectedTechnicianId)?.name || 'Technician'}</span>
+            )}
+          </h3>
+          <span className="bg-slate-900 text-white text-xs px-3 py-1 rounded-full font-bold font-mono">{filteredDateItems.length} IMEI(s)</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs whitespace-nowrap">
+            <thead className="bg-slate-900 text-white uppercase font-bold">
+              <tr>
+                <th className="p-3">Technician</th>
+                <th className="p-3">IMEI</th>
+                <th className="p-3">Model</th>
+                <th className="p-3">GB</th>
+                <th className="p-3">Color</th>
+                <th className="p-3">Service</th>
+                <th className="p-3">Assigned By</th>
+                <th className="p-3">Assigned At</th>
+                <th className="p-3">Status</th>
+                <th className="p-3">Received By</th>
+                <th className="p-3">Received At</th>
+                <th className="p-3">Rejection Reason</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {filteredDateItems.length === 0 ? (
+                <tr>
+                  <td colSpan={12} className="p-6 text-center text-gray-400">No IMEIs assigned on this date.</td>
+                </tr>
+              ) : (
+                filteredDateItems.map((item) => (
+                  <tr key={item.id} className="hover:bg-slate-50">
+                    <td className="p-3 font-medium text-slate-900">{item.technicians_vendors?.name || 'Unassigned'}</td>
+                    <td className="p-3 font-mono">{item.imei}</td>
+                    <td className="p-3">{item.model || '—'}</td>
+                    <td className="p-3">{item.storage_gb || '—'}</td>
+                    <td className="p-3">{item.color || '—'}</td>
+                    <td className="p-3">{item.resolved_services}</td>
+                    <td className="p-3">{item.resolved_assigned_by}</td>
+                    <td className="p-3 font-mono">{item.created_at ? new Date(item.created_at).toLocaleString() : '—'}</td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        item.display_status === 'Pending' ? 'bg-amber-100 text-amber-800' :
+                        item.display_status === 'Rejected' ? 'bg-rose-100 text-rose-800' :
+                        'bg-emerald-100 text-emerald-800'
+                      }`}>{item.display_status}</span>
+                    </td>
+                    <td className="p-3">{item.resolved_received_by}</td>
+                    <td className="p-3 font-mono">{item.received_at ? new Date(item.received_at).toLocaleString() : '—'}</td>
+                    <td className="p-3">{item.rejection_reason || '—'}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="border-t bg-slate-50 px-4 py-3 flex flex-wrap gap-x-6 gap-y-2 text-xs font-bold">
+          <span className="text-slate-900">Given: <span className="font-mono">{listTotals.given}</span></span>
+          <span className="text-emerald-600">Repaired: <span className="font-mono">{listTotals.repaired}</span></span>
+          <span className="text-gray-600">Reworked: <span className="font-mono">{listTotals.reworked}</span></span>
+          <span className="text-gray-600">Opened: <span className="font-mono">{listTotals.opened}</span></span>
+          <span className="text-gray-600">Checked: <span className="font-mono">{listTotals.checked}</span></span>
+          <span className="text-gray-600">Closed: <span className="font-mono">{listTotals.closed}</span></span>
+          <span className="text-rose-600">Rejected: <span className="font-mono">{listTotals.rejected}</span></span>
+          <span className="text-amber-600">Pending: <span className="font-mono">{listTotals.pending}</span></span>
         </div>
       </div>
 
