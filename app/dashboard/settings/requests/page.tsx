@@ -27,6 +27,11 @@ export default function DailyTechnicianStockPage() {
   const [loading, setLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
   const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>('ALL')
+  // Rows shown in the Repair Request List: IMEIs assigned on the selected day
+  // PLUS IMEIs carried over (still with the technician when the day started).
+  // `dateItems` stays "assigned on the selected day only" because the stock
+  // matrix uses it to count newly-given phones.
+  const [listItems, setListItems] = useState<any[]>([])
 
   useEffect(() => {
     fetchData()
@@ -97,39 +102,67 @@ export default function DailyTechnicianStockPage() {
       .gte('created_at', startISO)
       .lt('created_at', endISO)
 
+    const endMs = new Date(endISO).getTime()
+
+    // Resolve one row "as of the END of the selected Dubai day". A receive that
+    // happens after that moment must not change this day's list — it belongs to
+    // the day it actually happened on.
+    const processItem = (item: any) => {
+      const rawAssigned = item.assigned_by || item.repair_requests?.user_id || item.user_id
+      const rawReceived = item.received_by
+      const receivedAsOf = !!item.received_at && new Date(item.received_at).getTime() < endMs
+
+      // Never fall back to the currently logged-in user for a historical
+      // audit field, and never leak a raw UUID into the UI.
+      const resolvedAssigned = rawAssigned ? (profileMap[rawAssigned] || 'Unknown User') : 'Unknown User'
+      const resolvedReceived = receivedAsOf
+        ? (rawReceived ? (profileMap[rawReceived] || 'Unknown User') : 'Unknown User')
+        : '—'
+
+      const serviceIds: string[] = item.service_ids || []
+      const resolvedServices = serviceIds.length > 0
+        ? serviceIds.map((id: string) => serviceMap.get(id) || 'Unknown Service').join(' + ')
+        : '—'
+
+      return {
+        ...item,
+        technicians_vendors: techMap.get(item.technician_id) || { name: 'Unassigned', type: '' },
+        resolved_assigned_by: resolvedAssigned,
+        resolved_received_by: resolvedReceived,
+        resolved_services: resolvedServices,
+        display_status: receivedAsOf ? (item.current_status || 'Repaired') : 'Pending',
+        received_at_asof: receivedAsOf ? item.received_at : null,
+        rejection_reason_asof: receivedAsOf ? item.rejection_reason : null
+      }
+    }
+
+    let assignedToday: any[] = []
     if (itemsError) {
       console.error(itemsError.message)
-      setDateItems([])
     } else {
-      const processedItems = (itemsData || []).map(item => {
-        const rawAssigned = item.assigned_by || item.repair_requests?.user_id || item.user_id
-        const rawReceived = item.received_by
-
-        // Never fall back to the currently logged-in user for a historical
-        // audit field, and never leak a raw UUID into the UI.
-        const resolvedAssigned = rawAssigned ? (profileMap[rawAssigned] || 'Unknown User') : 'Unknown User'
-        const resolvedReceived = item.received_at
-          ? (rawReceived ? (profileMap[rawReceived] || 'Unknown User') : 'Unknown User')
-          : '—'
-
-        const serviceIds: string[] = item.service_ids || []
-        const resolvedServices = serviceIds.length > 0
-          ? serviceIds.map((id: string) => serviceMap.get(id) || 'Unknown Service').join(' + ')
-          : '—'
-
-        const displayStatus = item.received_at ? (item.current_status || 'Repaired') : 'Pending'
-
-        return {
-          ...item,
-          technicians_vendors: techMap.get(item.technician_id) || { name: 'Unassigned', type: '' },
-          resolved_assigned_by: resolvedAssigned,
-          resolved_received_by: resolvedReceived,
-          resolved_services: resolvedServices,
-          display_status: displayStatus
-        }
-      })
-      setDateItems(processedItems)
+      assignedToday = (itemsData || []).map(processItem)
     }
+    setDateItems(assignedToday)
+
+    // Carried over: assigned BEFORE this day and still with the technician when
+    // the day started (never received, or received on/after the day started).
+    const { data: carriedData, error: carriedError } = await supabase
+      .from('repair_request_items')
+      .select(`
+        *,
+        repair_requests (user_id)
+      `)
+      .lt('created_at', startISO)
+      .or(`received_at.is.null,received_at.gte.${startISO}`)
+
+    if (carriedError) console.error(carriedError.message)
+    const carriedOver = (carriedData || []).map(processItem)
+
+    const combined = [...assignedToday, ...carriedOver].sort((a, b) => {
+      const byTech = (a.technicians_vendors?.name || '').localeCompare(b.technicians_vendors?.name || '')
+      return byTech !== 0 ? byTech : String(a.created_at).localeCompare(String(b.created_at))
+    })
+    setListItems(combined)
 
     setLoading(false)
   }
@@ -183,9 +216,9 @@ export default function DailyTechnicianStockPage() {
 
     return {
       ...tech,
-      id: tech.id, // Explicitly guarantee row.id is always the technician ID
-      stock_record_id: stock.id, // Store stock record primary key separately
       ...stock,
+      id: tech.id, // must come AFTER ...stock, which carries its own `id` (or null)
+      stock_record_id: stock.id, // stock record primary key, kept separately
       opening_pending: openingPending,
       newly_given: newlyGiven,
       totalGiven,
@@ -201,8 +234,8 @@ export default function DailyTechnicianStockPage() {
   // Single source of rows for the Repair Request List table, its totals, and
   // the Excel export — filtering never creates a second, divergent dataset.
   const filteredDateItems = selectedTechnicianId === 'ALL'
-    ? dateItems
-    : dateItems.filter(item => item.technician_id === selectedTechnicianId)
+    ? listItems
+    : listItems.filter(item => item.technician_id === selectedTechnicianId)
 
   const listTotals = filteredDateItems.reduce((acc, item) => {
     acc.given += 1
@@ -292,8 +325,8 @@ export default function DailyTechnicianStockPage() {
         'Assigned At': item.created_at ? new Date(item.created_at).toLocaleString() : '',
         'Status': item.display_status,
         'Received By': item.resolved_received_by,
-        'Received At': item.received_at ? new Date(item.received_at).toLocaleString() : '—',
-        'Rejection Reason': item.rejection_reason || ''
+        'Received At': item.received_at_asof ? new Date(item.received_at_asof).toLocaleString() : '—',
+        'Rejection Reason': item.rejection_reason_asof || ''
       }
     })
 
@@ -475,7 +508,7 @@ export default function DailyTechnicianStockPage() {
       <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
         <div className="p-4 border-b flex justify-between items-center">
           <h3 className="font-bold text-gray-900 text-sm">
-            Repair Request List — IMEIs Assigned on {selectedDate}
+            Repair Request List — {selectedDate}
             {selectedTechnicianId !== 'ALL' && (
               <span className="font-normal text-gray-500"> · {technicians.find(t => t.id === selectedTechnicianId)?.name || 'Technician'}</span>
             )}
@@ -503,7 +536,7 @@ export default function DailyTechnicianStockPage() {
             <tbody className="divide-y">
               {filteredDateItems.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="p-6 text-center text-gray-400">No IMEIs assigned on this date.</td>
+                  <td colSpan={12} className="p-6 text-center text-gray-400">No IMEIs for this date.</td>
                 </tr>
               ) : (
                 filteredDateItems.map((item) => (
@@ -524,8 +557,8 @@ export default function DailyTechnicianStockPage() {
                       }`}>{item.display_status}</span>
                     </td>
                     <td className="p-3">{item.resolved_received_by}</td>
-                    <td className="p-3 font-mono">{item.received_at ? new Date(item.received_at).toLocaleString() : '—'}</td>
-                    <td className="p-3">{item.rejection_reason || '—'}</td>
+                    <td className="p-3 font-mono">{item.received_at_asof ? new Date(item.received_at_asof).toLocaleString() : '—'}</td>
+                    <td className="p-3">{item.rejection_reason_asof || '—'}</td>
                   </tr>
                 ))
               )}
