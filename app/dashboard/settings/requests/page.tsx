@@ -18,6 +18,13 @@ function getDubaiDayRangeUTC(dateStr: string) {
   return { startISO: startUTC.toISOString(), endISO: endUTC.toISOString() }
 }
 
+function shiftDateStr(dateStr: string, deltaDays: number) {
+  const [year, month, day] = dateStr.split('-').map(Number)
+  const d = new Date(Date.UTC(year, month - 1, day))
+  d.setUTCDate(d.getUTCDate() + deltaDays)
+  return d.toISOString().split('T')[0]
+}
+
 export default function DailyTechnicianStockPage() {
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0])
   const [technicians, setTechnicians] = useState<any[]>([])
@@ -25,6 +32,10 @@ export default function DailyTechnicianStockPage() {
   const [prevStockMap, setPrevStockMap] = useState<Map<string, any>>(new Map())
   const [dateItems, setDateItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  // True only until the first successful fetch — after that, refetches
+  // (date change, Verify, Lock Day) happen quietly in the background
+  // instead of unmounting the whole page behind a blank loading screen.
+  const [initialLoading, setInitialLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
   const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>('ALL')
   // Rows shown in the Repair Request List: IMEIs assigned on the selected day
@@ -41,22 +52,46 @@ export default function DailyTechnicianStockPage() {
     setLoading(true)
     setErrorMsg('')
 
-    const { data: techData, error: techError } = await supabase
-      .from('technicians_vendors')
-      .select('id, name, type')
-      .order('name', { ascending: true })
+    const prevDate = new Date(new Date(selectedDate).getTime() - 86400000).toISOString().split('T')[0]
+    const { startISO, endISO } = getDubaiDayRangeUTC(selectedDate)
+    const itemColumns = `*, repair_requests (user_id)`
+
+    // None of these queries depend on each other's results, so run them all
+    // as one round trip instead of six sequential ones — this is most of
+    // where the "everything goes blank and takes a while" time was going.
+    const [
+      { data: techData, error: techError },
+      { data: profilesData },
+      { data: servicesData },
+      { data: prevStockData },
+      { data: stockData, error: stockError },
+      { data: itemsData, error: itemsError },
+      { data: carriedData, error: carriedError }
+    ] = await Promise.all([
+      supabase.from('technicians_vendors').select('id, name, type').order('name', { ascending: true }),
+      supabase.from('profiles').select('*'),
+      supabase.from('services').select('id, name'),
+      supabase.from('daily_technician_stock').select('*').eq('stock_date', prevDate),
+      supabase.from('daily_technician_stock').select('*').eq('stock_date', selectedDate),
+      supabase.from('repair_request_items').select(itemColumns).gte('created_at', startISO).lt('created_at', endISO),
+      // Carried over: assigned BEFORE this day and still with the technician
+      // when the day started (never received, or received on/after the day
+      // started).
+      supabase.from('repair_request_items').select(itemColumns)
+        .lt('created_at', startISO)
+        .or(`received_at.is.null,received_at.gte.${startISO}`)
+    ])
 
     if (techError) {
       setErrorMsg(techError.message)
       setLoading(false)
+      setInitialLoading(false)
       return
     }
     const techs = techData || []
     setTechnicians(techs)
     const techMap = new Map(techs.map(t => [t.id, t]))
 
-    // Fetch profiles to resolve UUIDs to names
-    const { data: profilesData } = await supabase.from('profiles').select('*')
     const profileMap: { [key: string]: string } = {}
     if (profilesData) {
       profilesData.forEach((p: any) => {
@@ -70,37 +105,14 @@ export default function DailyTechnicianStockPage() {
     }
 
     // Service names: repair_request_items.service_ids is an array of UUIDs.
-    const { data: servicesData } = await supabase.from('services').select('id, name')
     const serviceMap = new Map((servicesData || []).map((s: any) => [s.id, s.name]))
 
-    const prevDate = new Date(new Date(selectedDate).getTime() - 86400000).toISOString().split('T')[0]
-    const { data: prevStockData } = await supabase
-      .from('daily_technician_stock')
-      .select('*')
-      .eq('stock_date', prevDate)
-
     setPrevStockMap(new Map((prevStockData || []).map(s => [s.technician_id, s])))
-
-    const { data: stockData, error: stockError } = await supabase
-      .from('daily_technician_stock')
-      .select('*')
-      .eq('stock_date', selectedDate)
 
     if (stockError) {
       setErrorMsg(stockError.message)
     }
     setStockRecords(stockData || [])
-
-    const { startISO, endISO } = getDubaiDayRangeUTC(selectedDate)
-
-    const { data: itemsData, error: itemsError } = await supabase
-      .from('repair_request_items')
-      .select(`
-        *,
-        repair_requests (user_id)
-      `)
-      .gte('created_at', startISO)
-      .lt('created_at', endISO)
 
     const endMs = new Date(endISO).getTime()
 
@@ -144,17 +156,6 @@ export default function DailyTechnicianStockPage() {
     }
     setDateItems(assignedToday)
 
-    // Carried over: assigned BEFORE this day and still with the technician when
-    // the day started (never received, or received on/after the day started).
-    const { data: carriedData, error: carriedError } = await supabase
-      .from('repair_request_items')
-      .select(`
-        *,
-        repair_requests (user_id)
-      `)
-      .lt('created_at', startISO)
-      .or(`received_at.is.null,received_at.gte.${startISO}`)
-
     if (carriedError) console.error(carriedError.message)
     const carriedOver = (carriedData || []).map(processItem)
 
@@ -165,6 +166,7 @@ export default function DailyTechnicianStockPage() {
     setListItems(combined)
 
     setLoading(false)
+    setInitialLoading(false)
   }
 
   const stockMap = new Map(stockRecords.map(s => [s.technician_id, s]))
@@ -236,6 +238,19 @@ export default function DailyTechnicianStockPage() {
   const filteredDateItems = selectedTechnicianId === 'ALL'
     ? listItems
     : listItems.filter(item => item.technician_id === selectedTechnicianId)
+
+  const matrixTotals = rowsWithMetrics.reduce((acc, row) => {
+    acc.opening += row.opening_pending || 0
+    acc.given += row.totalGiven || 0
+    acc.repaired += row.repaired || 0
+    acc.reworked += row.reworked || 0
+    acc.opened += row.opened || 0
+    acc.checked += row.checked || 0
+    acc.closed += row.closed || 0
+    acc.rejected += row.rejected_return || 0
+    acc.pending += row.closing_pending || 0
+    return acc
+  }, { opening: 0, given: 0, repaired: 0, reworked: 0, opened: 0, checked: 0, closed: 0, rejected: 0, pending: 0 })
 
   const listTotals = filteredDateItems.reduce((acc, item) => {
     acc.given += 1
@@ -363,18 +378,7 @@ export default function DailyTechnicianStockPage() {
       r.physical_verified ? 'Matched' : 'Pending'
     ])
 
-    const totals = rowsWithMetrics.reduce((acc, r) => {
-      acc.opening += r.opening_pending || 0
-      acc.given += r.totalGiven || 0
-      acc.repaired += r.repaired || 0
-      acc.reworked += r.reworked || 0
-      acc.opened += r.opened || 0
-      acc.checked += r.checked || 0
-      acc.closed += r.closed || 0
-      acc.rejected += r.rejected_return || 0
-      acc.pending += r.closing_pending || 0
-      return acc
-    }, { opening: 0, given: 0, repaired: 0, reworked: 0, opened: 0, checked: 0, closed: 0, rejected: 0, pending: 0 })
+    const totals = matrixTotals
 
     autoTable(doc, {
       head: [tableColumn],
@@ -393,14 +397,17 @@ export default function DailyTechnicianStockPage() {
     doc.save(`Daily_Stock_Summary_${selectedDate}.pdf`)
   }
 
-  if (loading) return <div className="max-w-7xl mx-auto p-6 text-center text-sm text-gray-500">Loading Daily Technician Stock...</div>
+  if (initialLoading) return <div className="max-w-7xl mx-auto p-6 text-center text-sm text-gray-500">Loading Daily Technician Stock...</div>
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 p-6">
       <div className="bg-white p-6 rounded-lg shadow-sm border flex flex-wrap justify-between items-center gap-4">
         <div>
           <h2 className="text-xl font-bold text-gray-900">Technician Daily Operational & Stock Matrix</h2>
-          <p className="text-xs text-gray-500 mt-1">Verify physical bench stock and lock daily summaries.</p>
+          <p className="text-xs text-gray-500 mt-1">
+            Verify physical bench stock and lock daily summaries.
+            {loading && <span className="ml-2 text-slate-500 font-semibold animate-pulse">· Updating…</span>}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -430,21 +437,50 @@ export default function DailyTechnicianStockPage() {
           </div>
           <div className="flex items-center gap-2 border-l pl-3">
             <label className="text-xs font-bold text-gray-700">Date:</label>
+            <button
+              onClick={() => setSelectedDate(shiftDateStr(selectedDate, -1))}
+              className="px-2 py-2 text-xs border rounded-lg font-bold text-gray-600 hover:bg-gray-100 cursor-pointer"
+              title="Previous day"
+            >
+              ←
+            </button>
             <input
               type="date"
               value={selectedDate}
               onChange={(e) => setSelectedDate(e.target.value)}
               className="px-3 py-2 text-xs border rounded-lg font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
+            <button
+              onClick={() => setSelectedDate(shiftDateStr(selectedDate, 1))}
+              className="px-2 py-2 text-xs border rounded-lg font-bold text-gray-600 hover:bg-gray-100 cursor-pointer"
+              title="Next day"
+            >
+              →
+            </button>
           </div>
         </div>
       </div>
 
       {errorMsg && <div className="p-4 bg-red-50 text-red-700 rounded-lg border text-sm">Database Error: {errorMsg}</div>}
 
-      <div className={`p-4 rounded-lg border flex justify-between items-center text-xs font-bold ${isDayLocked ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>
+      <div className={`p-4 rounded-lg border flex flex-wrap justify-between items-center gap-3 text-xs font-bold ${isDayLocked ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>
         <span>{isDayLocked ? `🔒 This date (${selectedDate}) is locked and immutable.` : `🔓 Active Open Day — Pending Physical Verification & Lock.`}</span>
-        <span className="font-mono">{matchedCount} / {requiredTechs.length} Required Technicians Matched</span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono">{matchedCount} / {requiredTechs.length} Required Technicians Matched</span>
+          {!isDayLocked && (
+            <button
+              disabled={!allRequiredMatched || loading}
+              onClick={handleLockDay}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                allRequiredMatched
+                  ? 'bg-slate-900 hover:bg-slate-800 text-white shadow cursor-pointer'
+                  : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              LOCK DAY
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
@@ -484,7 +520,7 @@ export default function DailyTechnicianStockPage() {
                   <td className="p-4 text-center">
                     {row.isRequired ? (
                       <button
-                        disabled={isDayLocked}
+                        disabled={isDayLocked || loading}
                         onClick={() => toggleVerification(row.id, row.stock_record_id, row.physical_verified, row.newly_given, row.closing_pending, row.opening_pending)}
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                           row.physical_verified
@@ -501,6 +537,21 @@ export default function DailyTechnicianStockPage() {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr className="bg-slate-100 font-bold border-t-2 border-slate-300">
+                <td className="p-4 text-slate-900">TOTAL</td>
+                <td className="p-4 text-center font-mono text-slate-700">{matrixTotals.opening}</td>
+                <td className="p-4 text-center font-mono text-slate-900">{matrixTotals.given}</td>
+                <td className="p-4 text-center font-mono text-emerald-700">{matrixTotals.repaired}</td>
+                <td className="p-4 text-center font-mono text-gray-700">{matrixTotals.reworked}</td>
+                <td className="p-4 text-center font-mono text-gray-700">{matrixTotals.opened}</td>
+                <td className="p-4 text-center font-mono text-gray-700">{matrixTotals.checked}</td>
+                <td className="p-4 text-center font-mono text-gray-700">{matrixTotals.closed}</td>
+                <td className="p-4 text-center font-mono text-rose-700">{matrixTotals.rejected}</td>
+                <td className="p-4 text-center font-mono text-amber-700">{matrixTotals.pending}</td>
+                <td className="p-4 text-center font-mono text-slate-700">{matchedCount} / {requiredTechs.length}</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
@@ -577,24 +628,6 @@ export default function DailyTechnicianStockPage() {
         </div>
       </div>
 
-      {!isDayLocked && (
-        <div className="bg-white p-6 rounded-lg shadow-sm border flex justify-between items-center">
-          <span className="text-xs font-bold text-gray-700">
-            {matchedCount} / {requiredTechs.length} Technicians Matched
-          </span>
-          <button
-            disabled={!allRequiredMatched}
-            onClick={handleLockDay}
-            className={`px-6 py-2.5 rounded-lg text-xs font-bold transition-all ${
-              allRequiredMatched
-                ? 'bg-slate-900 hover:bg-slate-800 text-white shadow cursor-pointer'
-                : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-            }`}
-          >
-            LOCK DAY
-          </button>
-        </div>
-      )}
     </div>
   )
 }

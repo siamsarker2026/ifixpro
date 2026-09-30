@@ -96,9 +96,16 @@ export default function RepairReceivePage() {
     }
   }
 
+  // Asia/Dubai is a fixed UTC+4 offset (no DST) — matches the boundary used
+  // by the Repair Request List, so a receive always lands on the same
+  // calendar day that page shows it on.
+  function getDubaiDateStr() {
+    return new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString().split('T')[0]
+  }
+
   async function updateTechnicianDailyStock(technicianId: string, computedStatus: string, isRejected: boolean) {
     if (!technicianId) return
-    const todayStr = new Date().toISOString().split('T')[0]
+    const todayStr = getDubaiDateStr()
 
     // 1. Check if daily stock row exists for this technician today
     const { data: existingRecords, error: fetchError } = await supabase
@@ -114,6 +121,15 @@ export default function RepairReceivePage() {
     }
 
     let currentRecord = existingRecords && existingRecords.length > 0 ? existingRecords[0] : null
+
+    // A locked day's aggregate counts are immutable — never touch them here.
+    // The receive event itself is still recorded on the item (already
+    // written before this function runs), it just won't move this
+    // technician's stock counters for an already-locked date.
+    if (currentRecord?.locked_at) {
+      console.warn(`Skipped daily stock update: ${todayStr} is locked for technician ${technicianId}`)
+      return
+    }
 
     // Determine increment mappings
     const incReceivedBack = 1
