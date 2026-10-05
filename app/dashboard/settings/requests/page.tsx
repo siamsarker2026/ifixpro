@@ -38,6 +38,12 @@ export default function DailyTechnicianStockPage() {
   const [initialLoading, setInitialLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState('')
   const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>('ALL')
+  // Bulk Remarks/Brand tool: tick rows in the list below, type one note,
+  // apply it to all ticked rows at once — for fixing/adding remarks after
+  // the fact, without opening each row individually.
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
+  const [bulkRemarksText, setBulkRemarksText] = useState('')
+  const [savingRemarks, setSavingRemarks] = useState(false)
   // Rows shown in the Repair Request List: IMEIs assigned on the selected day
   // PLUS IMEIs carried over (still with the technician when the day started).
   // `dateItems` stays "assigned on the selected day only" because the stock
@@ -341,7 +347,8 @@ export default function DailyTechnicianStockPage() {
         'Status': item.display_status,
         'Received By': item.resolved_received_by,
         'Received At': item.received_at_asof ? new Date(item.received_at_asof).toLocaleString() : '—',
-        'Rejection Reason': item.rejection_reason_asof || ''
+        'Rejection Reason': item.rejection_reason_asof || '',
+        'Remarks': item.remarks || ''
       }
     })
 
@@ -353,6 +360,43 @@ export default function DailyTechnicianStockPage() {
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, worksheet, `Items_${selectedDate}`)
     XLSX.writeFile(workbook, `Repair_Items_Details_${selectedDate}${techSuffix}.xlsx`)
+  }
+
+  function toggleItemSelected(id: string) {
+    setSelectedItemIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedItemIds(prev => {
+      const allVisible = filteredDateItems.map(i => i.id)
+      const allSelected = allVisible.length > 0 && allVisible.every(id => prev.has(id))
+      return allSelected ? new Set() : new Set(allVisible)
+    })
+  }
+
+  async function applyBulkRemarks() {
+    if (selectedItemIds.size === 0) return
+    setSavingRemarks(true)
+    const { error } = await supabase
+      .from('repair_request_items')
+      .update({ remarks: bulkRemarksText.trim() || null })
+      .in('id', Array.from(selectedItemIds))
+
+    if (error) {
+      alert('Error saving remarks: ' + error.message)
+      setSavingRemarks(false)
+      return
+    }
+
+    setSelectedItemIds(new Set())
+    setBulkRemarksText('')
+    setSavingRemarks(false)
+    fetchData()
   }
 
   function downloadPDF() {
@@ -570,12 +614,21 @@ export default function DailyTechnicianStockPage() {
           <table className="w-full text-left text-xs whitespace-nowrap">
             <thead className="bg-slate-900 text-white uppercase font-bold">
               <tr>
+                <th className="p-3">
+                  <input
+                    type="checkbox"
+                    checked={filteredDateItems.length > 0 && filteredDateItems.every(i => selectedItemIds.has(i.id))}
+                    onChange={toggleSelectAllVisible}
+                    className="w-4 h-4"
+                  />
+                </th>
                 <th className="p-3">Technician</th>
                 <th className="p-3">IMEI</th>
                 <th className="p-3">Model</th>
                 <th className="p-3">GB</th>
                 <th className="p-3">Color</th>
                 <th className="p-3">Service</th>
+                <th className="p-3">Remarks</th>
                 <th className="p-3">Assigned By</th>
                 <th className="p-3">Assigned At</th>
                 <th className="p-3">Status</th>
@@ -587,17 +640,26 @@ export default function DailyTechnicianStockPage() {
             <tbody className="divide-y">
               {filteredDateItems.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="p-6 text-center text-gray-400">No IMEIs for this date.</td>
+                  <td colSpan={13} className="p-6 text-center text-gray-400">No IMEIs for this date.</td>
                 </tr>
               ) : (
                 filteredDateItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50">
+                  <tr key={item.id} className={`hover:bg-slate-50 ${selectedItemIds.has(item.id) ? 'bg-slate-50' : ''}`}>
+                    <td className="p-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedItemIds.has(item.id)}
+                        onChange={() => toggleItemSelected(item.id)}
+                        className="w-4 h-4"
+                      />
+                    </td>
                     <td className="p-3 font-medium text-slate-900">{item.technicians_vendors?.name || 'Unassigned'}</td>
                     <td className="p-3 font-mono">{item.imei}</td>
                     <td className="p-3">{item.model || '—'}</td>
                     <td className="p-3">{item.storage_gb || '—'}</td>
                     <td className="p-3">{item.color || '—'}</td>
                     <td className="p-3">{item.resolved_services}</td>
+                    <td className="p-3">{item.remarks || '—'}</td>
                     <td className="p-3">{item.resolved_assigned_by}</td>
                     <td className="p-3 font-mono">{item.created_at ? new Date(item.created_at).toLocaleString() : '—'}</td>
                     <td className="p-3">
@@ -625,6 +687,30 @@ export default function DailyTechnicianStockPage() {
           <span className="text-gray-600">Closed: <span className="font-mono">{listTotals.closed}</span></span>
           <span className="text-rose-600">Rejected: <span className="font-mono">{listTotals.rejected}</span></span>
           <span className="text-amber-600">Pending: <span className="font-mono">{listTotals.pending}</span></span>
+        </div>
+        <div className="border-t p-4 flex flex-wrap items-center gap-3 bg-white">
+          <span className="text-xs font-bold text-gray-700">
+            {selectedItemIds.size > 0 ? `${selectedItemIds.size} IMEI(s) selected` : 'Tick rows above to bulk-apply a remark'}
+          </span>
+          <input
+            type="text"
+            value={bulkRemarksText}
+            onChange={(e) => setBulkRemarksText(e.target.value)}
+            placeholder="Remarks / Brand to apply to selected rows..."
+            disabled={selectedItemIds.size === 0}
+            className="flex-1 min-w-[220px] border border-gray-300 rounded-lg p-2 text-xs focus:ring-2 focus:ring-slate-900 outline-none disabled:bg-gray-50"
+          />
+          <button
+            onClick={applyBulkRemarks}
+            disabled={selectedItemIds.size === 0 || savingRemarks}
+            className={`px-4 py-2 rounded-lg text-xs font-bold ${
+              selectedItemIds.size === 0 || savingRemarks
+                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                : 'bg-slate-900 hover:bg-slate-800 text-white cursor-pointer'
+            }`}
+          >
+            {savingRemarks ? 'Applying…' : `Apply to Selected`}
+          </button>
         </div>
       </div>
 

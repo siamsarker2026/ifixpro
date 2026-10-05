@@ -1,34 +1,40 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 
-export default function TraceRepairHistoryPage() {
+export default function TraceImeiHistoryPage() {
   const [imeiInput, setImeiInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [historyItems, setHistoryItems] = useState<any[]>([])
   const [errorMsg, setErrorMsg] = useState('')
-  const [servicesMap, setServicesMap] = useState<Map<string, string>>(new Map())
+  const [historyItems, setHistoryItems] = useState<any[]>([])
 
-  useEffect(() => {
-    fetchServices()
-  }, [])
+  // Shown when there's no repair history at all for this IMEI, but it does
+  // exist in Stock Master — e.g. a device that's been inventoried but never
+  // assigned for repair yet.
+  const [stockMasterRecord, setStockMasterRecord] = useState<any>(null)
 
-  async function fetchServices() {
-    const { data } = await supabase.from('services').select('id, name')
-    if (data) {
-      setServicesMap(new Map(data.map(s => [s.id, s.name])))
-    }
-  }
+  // For devices that couldn't power on at intake: a placeholder identifier
+  // (e.g. "100") was used instead of the real IMEI, and now needs to be
+  // swapped in without losing the repair history attached to it.
+  const [renameValue, setRenameValue] = useState('')
+  const [renaming, setRenaming] = useState(false)
+  const [renameError, setRenameError] = useState('')
+  const [renameSuccess, setRenameSuccess] = useState('')
 
-  async function handleSearch(e: React.FormEvent) {
+  async function handleSearch(e: React.FormEvent, overrideImei?: string) {
     e.preventDefault()
-    if (!imeiInput.trim()) return
+    const searchImei = (overrideImei ?? imeiInput).trim()
+    if (!searchImei) return
 
     setLoading(true)
     setErrorMsg('')
     setHistoryItems([])
+    setStockMasterRecord(null)
+    setRenameValue('')
+    setRenameError('')
+    setRenameSuccess('')
 
     const { data: { user } } = await supabase.auth.getUser()
     const activeUserName = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'supportlab1'
@@ -43,7 +49,9 @@ export default function TraceRepairHistoryPage() {
       })
     }
 
-    // Explicit foreign key constraint specified here to fix the multiple relationship error
+    const { data: servicesData } = await supabase.from('services').select('id, name')
+    const serviceMap = new Map((servicesData || []).map((s: any) => [s.id, s.name]))
+
     const { data, error } = await supabase
       .from('repair_request_items')
       .select(`
@@ -51,13 +59,26 @@ export default function TraceRepairHistoryPage() {
         technicians_vendors!repair_request_items_technician_id_fkey (name, type),
         repair_requests (reference_number, status, created_at, user_id)
       `)
-      .eq('imei', imeiInput.trim())
+      .eq('imei', searchImei)
       .order('created_at', { ascending: false })
 
     if (error) {
       setErrorMsg(error.message)
     } else if (!data || data.length === 0) {
-      setErrorMsg('No history found for this IMEI.')
+      // No repair history — check Stock Master before giving up. Only a
+      // real 15-digit IMEI can be in Stock Master, so skip the call
+      // entirely for a placeholder identifier like "100".
+      if (/^\d{15}$/.test(searchImei)) {
+        const res = await fetch(`/api/device?imei=${searchImei}`)
+        const result = await res.json()
+        if (result.success && result.device) {
+          setStockMasterRecord(result.device)
+        } else {
+          setErrorMsg('No repair history or Stock Master record found for this IMEI.')
+        }
+      } else {
+        setErrorMsg('No history found for this identifier.')
+      }
     } else {
       const processed = data.map((item) => {
         const rawAssigned = item.assigned_by || item.repair_requests?.user_id || item.user_id
@@ -66,12 +87,11 @@ export default function TraceRepairHistoryPage() {
         const resolvedAssigned = profileMap[rawAssigned] || rawAssigned || activeUserName
         const resolvedReceived = profileMap[rawReceived] || rawReceived || '—'
 
-        // Resolve all service IDs from the array or fallback to legacy scalar
         const ids = item.service_ids && item.service_ids.length > 0
           ? item.service_ids
           : (item.service_id ? [item.service_id] : [])
 
-        const serviceNames = ids.map((id: string) => servicesMap.get(id) || 'Unknown Service')
+        const serviceNames = ids.map((id: string) => serviceMap.get(id) || 'Unknown Service')
 
         return {
           ...item,
@@ -85,50 +105,92 @@ export default function TraceRepairHistoryPage() {
     setLoading(false)
   }
 
+  async function handleRename() {
+    const oldValue = imeiInput.trim()
+    const newValue = renameValue.trim()
+    setRenameError('')
+    setRenameSuccess('')
+
+    if (!newValue || newValue === oldValue) return
+
+    setRenaming(true)
+
+    const { data: collision } = await supabase
+      .from('repair_request_items')
+      .select('id')
+      .eq('imei', newValue)
+      .limit(1)
+
+    if (collision && collision.length > 0) {
+      setRenameError(`"${newValue}" is already used by another record — can't rename to it.`)
+      setRenaming(false)
+      return
+    }
+
+    const { error } = await supabase
+      .from('repair_request_items')
+      .update({ imei: newValue })
+      .eq('imei', oldValue)
+
+    if (error) {
+      setRenameError(error.message)
+      setRenaming(false)
+      return
+    }
+
+    setRenaming(false)
+    setRenameSuccess(`Renamed to ${newValue}. All ${historyItems.length} history row(s) kept.`)
+    setImeiInput(newValue)
+    setRenameValue('')
+    const fakeEvent = { preventDefault: () => {} } as React.FormEvent
+    handleSearch(fakeEvent, newValue)
+  }
+
   const latestItem = historyItems.length > 0 ? historyItems[0] : null
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6">
       <div className="bg-white p-6 rounded-lg shadow-sm border flex justify-between items-start gap-4">
         <div>
-          <h2 className="text-xl font-bold text-gray-900">Trace Repair History</h2>
-          <p className="text-sm text-gray-600">Look up complete historical repair logs and event audit trails by IMEI.</p>
+          <h2 className="text-xl font-bold text-gray-900">Trace IMEI History</h2>
+          <p className="text-sm text-gray-600">
+            Scan or type an IMEI to see everything known about it — repair history if it has any,
+            or its Stock Master record if it doesn't.
+          </p>
         </div>
         <Link
-          href="/dashboard/trace-history/imei-history"
-          className="shrink-0 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold whitespace-nowrap"
+          href="/dashboard/trace-history"
+          className="shrink-0 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-900 rounded-lg text-xs font-bold whitespace-nowrap"
         >
-          Trace IMEI History →
+          ← Back to Trace Repair History
         </Link>
       </div>
 
-      {errorMsg && (
-        <div className="p-4 bg-red-50 text-red-700 rounded-lg border text-sm">
-          {errorMsg}
-        </div>
-      )}
-
-      {/* Search Bar */}
       <div className="bg-white p-6 rounded-lg shadow-sm border">
         <form onSubmit={handleSearch} className="flex gap-4">
-          <input 
+          <input
             type="text"
-            placeholder="Enter IMEI to trace history..."
+            autoFocus
+            placeholder="Scan or type IMEI..."
             value={imeiInput}
             onChange={(e) => setImeiInput(e.target.value)}
             className="flex-1 bg-white text-gray-900 placeholder:text-gray-400 border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-slate-900 outline-none font-mono text-sm"
           />
-          <button 
+          <button
             type="submit"
             disabled={loading}
             className="bg-slate-900 text-white px-6 py-3 rounded-lg font-medium hover:bg-slate-800 transition text-sm cursor-pointer"
           >
-            {loading ? 'Searching...' : 'Trace IMEI'}
+            {loading ? 'Searching...' : 'Search'}
           </button>
         </form>
       </div>
 
-      {/* Device Information — Shown Once */}
+      {errorMsg && (
+        <div className="p-4 bg-red-50 text-red-700 rounded-lg border text-sm">{errorMsg}</div>
+      )}
+
+      {/* Device Information — from repair history */}
       {latestItem && (
         <div className="bg-slate-50 border border-slate-200 p-6 rounded-lg shadow-sm space-y-3">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Device Information</h3>
@@ -155,6 +217,47 @@ export default function TraceRepairHistoryPage() {
                 {latestItem.received_at ? latestItem.current_status : 'Pending'}
               </span>
             </div>
+          </div>
+
+          <div className="border-t border-slate-200 pt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-gray-500">
+              Used a placeholder number because the phone couldn't power on? Replace it with the real IMEI once known:
+            </span>
+            <input
+              type="text"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              placeholder="Real IMEI..."
+              className="border border-gray-300 rounded-lg p-1.5 text-xs font-mono"
+            />
+            <button
+              onClick={handleRename}
+              disabled={renaming || !renameValue.trim()}
+              className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white rounded-lg text-xs font-bold"
+            >
+              {renaming ? 'Saving...' : 'Rename'}
+            </button>
+          </div>
+          {renameError && <p className="text-xs text-red-600">{renameError}</p>}
+          {renameSuccess && <p className="text-xs text-emerald-700">{renameSuccess}</p>}
+        </div>
+      )}
+
+      {/* Stock Master fallback — IMEI exists in inventory but has no repair history yet */}
+      {stockMasterRecord && (
+        <div className="bg-slate-50 border border-slate-200 p-6 rounded-lg shadow-sm space-y-3">
+          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">
+            Stock Master Record <span className="font-normal normal-case text-gray-500">(no repair history yet)</span>
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+            {Object.entries(stockMasterRecord)
+              .filter(([key, val]) => !['id', 'created_at', 'updated_at'].includes(key) && val)
+              .map(([key, val]) => (
+                <div key={key}>
+                  <span className="text-gray-500 block capitalize">{key.replace(/_/g, ' ')}</span>
+                  <span className="font-medium text-gray-900 text-sm font-mono">{String(val)}</span>
+                </div>
+              ))}
           </div>
         </div>
       )}

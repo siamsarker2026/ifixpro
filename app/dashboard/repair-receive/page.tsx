@@ -11,6 +11,7 @@ interface QueueItem {
   status: 'Queued' | 'Processing' | 'Success' | 'Error'
   errorMsg?: string
   time: string
+  forDate: string
   details?: {
     referenceNo?: string
     technician?: string
@@ -28,6 +29,13 @@ export default function RepairReceivePage() {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [recentProcessed, setRecentProcessed] = useState<any[]>([])
 
+  // "Receiving for" lets you catch up on a day you didn't finish scanning,
+  // without it silently falling into whichever day you happen to scan on.
+  // Only days that are NOT fully locked are offered — a locked day can never
+  // be chosen here.
+  const [receivingDate, setReceivingDate] = useState<string>('')
+  const [openDates, setOpenDates] = useState<string[]>([])
+
   const processingRef = useRef(false)
   const queueRef = useRef<QueueItem[]>([])
   queueRef.current = queue
@@ -36,6 +44,7 @@ export default function RepairReceivePage() {
 
   useEffect(() => {
     fetchServices()
+    fetchOpenDates()
   }, [])
 
   async function fetchServices() {
@@ -43,6 +52,40 @@ export default function RepairReceivePage() {
     if (data) {
       setServicesMap(new Map(data.map(s => [s.id, s.name])))
     }
+  }
+
+  async function fetchOpenDates() {
+    const today = getDubaiDateStr()
+    const lookbackStart = new Date(new Date(today).getTime() - 13 * 86400000).toISOString().split('T')[0]
+
+    const { data } = await supabase
+      .from('daily_technician_stock')
+      .select('stock_date, locked_at')
+      .gte('stock_date', lookbackStart)
+      .lt('stock_date', today)
+
+    const byDate = new Map<string, boolean[]>()
+    ;(data || []).forEach((row: any) => {
+      const arr = byDate.get(row.stock_date) || []
+      arr.push(!!row.locked_at)
+      byDate.set(row.stock_date, arr)
+    })
+
+    // Yesterday is always offered, even with zero stock rows yet — that's
+    // exactly the "didn't touch it at all before closing" case.
+    const yesterday = new Date(new Date(today).getTime() - 86400000).toISOString().split('T')[0]
+    const candidates = new Set<string>([yesterday])
+    byDate.forEach((lockedFlags, date) => candidates.add(date))
+
+    const open = Array.from(candidates)
+      .filter(date => {
+        const flags = byDate.get(date)
+        return !flags || flags.length === 0 || !flags.every(Boolean)
+      })
+      .sort((a, b) => b.localeCompare(a))
+
+    setOpenDates(open)
+    setReceivingDate(today)
   }
 
   // Keep focus on IMEI input automatically for continuous scanning
@@ -86,7 +129,8 @@ export default function RepairReceivePage() {
       mode,
       rejectionReason: mode === 'reject' ? rejectionReason.trim() : null,
       status: 'Queued',
-      time: new Date().toLocaleTimeString()
+      time: new Date().toLocaleTimeString(),
+      forDate: receivingDate || getDubaiDateStr()
     }
 
     setQueue(prev => [newItem, ...prev])
@@ -103,9 +147,28 @@ export default function RepairReceivePage() {
     return new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString().split('T')[0]
   }
 
-  async function updateTechnicianDailyStock(technicianId: string, computedStatus: string, isRejected: boolean) {
+  // The real scan moment for "today"; a fixed mid-day timestamp (Dubai, UTC+4)
+  // when catching up on an earlier day, so it safely falls inside that day's
+  // boundary everywhere else that reads it.
+  function timestampFor(dateStr: string) {
+    return dateStr === getDubaiDateStr()
+      ? new Date().toISOString()
+      : new Date(`${dateStr}T12:00:00+04:00`).toISOString()
+  }
+
+  async function isDayLockedForTechnician(technicianId: string, dateStr: string) {
+    const { data } = await supabase
+      .from('daily_technician_stock')
+      .select('locked_at')
+      .eq('technician_id', technicianId)
+      .eq('stock_date', dateStr)
+      .limit(1)
+    return !!(data && data[0]?.locked_at)
+  }
+
+  async function updateTechnicianDailyStock(technicianId: string, computedStatus: string, isRejected: boolean, forDate: string) {
     if (!technicianId) return
-    const todayStr = getDubaiDateStr()
+    const todayStr = forDate
 
     // 1. Check if daily stock row exists for this technician today
     const { data: existingRecords, error: fetchError } = await supabase
@@ -210,6 +273,10 @@ export default function RepairReceivePage() {
         throw new Error(`Already received (${refNo})`)
       }
 
+      if (itemData.technician_id && await isDayLockedForTechnician(itemData.technician_id, nextItem.forDate)) {
+        throw new Error(`${nextItem.forDate} is locked for this technician — can't receive into it`)
+      }
+
       const ids = itemData.service_ids && itemData.service_ids.length > 0
         ? itemData.service_ids
         : (itemData.service_id ? [itemData.service_id] : [])
@@ -220,7 +287,7 @@ export default function RepairReceivePage() {
 
       const updatePayload: any = {
         current_status: computedStatus,
-        received_at: new Date().toISOString(),
+        received_at: timestampFor(nextItem.forDate),
         received_by: user.id,
         rejection_reason: nextItem.rejectionReason
       }
@@ -249,7 +316,7 @@ export default function RepairReceivePage() {
 
       // 4. Automatically update Technician Daily Stock Counters
       if (itemData.technician_id) {
-        await updateTechnicianDailyStock(itemData.technician_id, computedStatus, isRejectedMode)
+        await updateTechnicianDailyStock(itemData.technician_id, computedStatus, isRejectedMode, nextItem.forDate)
       }
 
       const successDetails = {
@@ -307,6 +374,25 @@ export default function RepairReceivePage() {
           />
           <span>Reject Mode</span>
         </label>
+      </div>
+
+      <div className="bg-white p-4 rounded-lg shadow-sm border flex items-center gap-3">
+        <label className="text-sm font-semibold text-gray-700">Receiving for:</label>
+        <select
+          value={receivingDate}
+          onChange={(e) => setReceivingDate(e.target.value)}
+          className="px-3 py-2 text-sm border rounded-lg font-mono font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+        >
+          <option value={getDubaiDateStr()}>Today ({getDubaiDateStr()})</option>
+          {openDates.map(d => (
+            <option key={d} value={d}>{d} (catching up)</option>
+          ))}
+        </select>
+        {receivingDate !== getDubaiDateStr() && (
+          <span className="text-xs font-semibold text-amber-700">
+            ⚠ Scans will be dated and counted for {receivingDate}, not right now.
+          </span>
+        )}
       </div>
 
       {mode === 'reject' && (

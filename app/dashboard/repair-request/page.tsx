@@ -8,6 +8,7 @@ interface QueueItem {
   imei: string
   technicianId: string
   services: any[]
+  remarks: string
   status: 'Queued' | 'Processing' | 'Saved' | 'Error'
   errorMsg?: string
   time: string
@@ -35,6 +36,9 @@ export default function RepairRequestPage() {
 
   const imeiInputRef = useRef<HTMLInputElement>(null)
 
+  // Applied to every IMEI scanned in this batch — e.g. the battery brand
+  // used for this whole run of assignments. Not per-IMEI entry.
+  const [batchRemarks, setBatchRemarks] = useState('')
   const [isRemoveMode, setIsRemoveMode] = useState(false)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
 
@@ -178,6 +182,7 @@ export default function RepairRequestPage() {
       imei: cleanImei,
       technicianId: technicianId,
       services: [...selectedServices],
+      remarks: batchRemarks.trim(),
       status: 'Queued',
       time: new Date().toLocaleTimeString()
     }
@@ -235,7 +240,8 @@ export default function RepairRequestPage() {
           storage_gb: apiResult.device.gb,
           color: apiResult.device.color,
           current_status: 'Assigned',
-          assigned_by: user ? user.id : null
+          assigned_by: user ? user.id : null,
+          remarks: nextItem.remarks || null
         })
         .select()
         .single()
@@ -366,7 +372,17 @@ export default function RepairRequestPage() {
       </div>
 
       {!isRemoveMode && selectedServices.length > 0 && (
-        <div className="bg-white p-4 rounded-lg shadow-sm border space-y-2">
+        <div className="bg-white p-4 rounded-lg shadow-sm border space-y-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Remarks / Brand (optional) — applied to every IMEI scanned in this batch</label>
+            <input
+              type="text"
+              value={batchRemarks}
+              onChange={(e) => setBatchRemarks(e.target.value)}
+              placeholder="e.g. battery brand, parts note..."
+              className="w-full border border-gray-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+            />
+          </div>
           <label className="block text-sm font-medium text-gray-700">Services applied to incoming IMEI scans ({selectedServices.length}):</label>
           <div className="flex flex-wrap gap-2">
             {selectedServices.map((srv) => (

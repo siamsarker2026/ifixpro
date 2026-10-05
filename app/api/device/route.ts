@@ -24,7 +24,7 @@ export async function GET(request: Request) {
     // Query Supabase safely using maybeSingle() to prevent single-object coercion crashes
     const { data, error } = await masterSupabase
       .from('device_master')
-      .select('imei, model, gb, color')
+      .select('*')
       .eq('imei', cleanImei)
       .maybeSingle()
 
@@ -39,12 +39,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       success: true,
-      device: {
-        imei: data.imei,
-        model: data.model,
-        gb: data.gb,
-        color: data.color,
-      },
+      device: data,
     })
   } catch (err: any) {
     console.log('SERVER CATCH ERROR:', err)
