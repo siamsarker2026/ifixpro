@@ -35,6 +35,13 @@ const settingsModules = [
     icon: Target,
     iconBg: "bg-emerald-100 text-emerald-600",
   },
+  {
+    title: "User Access Management",
+    description: "Manage user roles, passwords, and account access",
+    href: "/dashboard/settings/users",
+    icon: Users,
+    iconBg: "bg-yellow-100 text-yellow-600",
+  },
 ];
 
 export default function SettingsPage() {

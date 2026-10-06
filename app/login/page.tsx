@@ -8,6 +8,7 @@ export default function LoginPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -59,17 +60,31 @@ export default function LoginPage() {
 
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Password</label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-white text-gray-900 border border-gray-300 p-2.5 rounded-lg text-sm outline-none focus:border-blue-600"
-              placeholder="••••••••"
-            />
+            {/* Added relative positioning to parent container */}
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full bg-white text-gray-900 border border-gray-300 p-2.5 pr-16 rounded-lg text-sm outline-none focus:border-blue-600"
+                placeholder="••••••••"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-semibold text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 px-2.5 py-1 rounded-md transition-colors"
+              >
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
+            </div>
           </div>
 
-          <button
+          <div className="flex justify-between items-center text-xs text-gray-500">
+            <span className="cursor-pointer hover:underline">Forgot password?</span>
+          </div> 
+
+          <button         
             type="submit"
             disabled={loading}
             className="w-full bg-slate-900 hover:bg-slate-800 text-white p-2.5 rounded-lg font-medium text-sm transition-colors disabled:opacity-50"
