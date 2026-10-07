@@ -17,7 +17,7 @@ const reportsModules = [
   {
     title: "Diagnostic Reports",
     description: "View and download diagnostic reports",
-    href: "/dashboard/reports/diagnostic",
+    href: "/dashboard/reports/diagnostics-report",
     icon: FileText,
     iconBg: "bg-blue-100 text-blue-600",
   },

@@ -2,30 +2,52 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useAllowedModules } from '@/hooks/useAllowedModules'
 
 interface UserProfile {
   id: string
   email: string
   role: string
   is_active: boolean
-  name?: string
+  full_name?: string
 }
 
+interface ModuleItem {
+  id: string
+  name: string
+  category: string
+}
+
+interface RolePermission {
+  role: string
+  module_id: string
+}
+
+const ROLES = ['user', 'operator', 'supervisor', 'manager', 'admin']
+
 export default function UsersManagementPage() {
+  const { canAccess, loading: permissionsLoading } = useAllowedModules()
+
   const [users, setUsers] = useState<UserProfile[]>([])
   const [loading, setLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   
-  // Form States
-  const [name, setName] = useState('')
+  // User Creation State
+  const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [role, setRole] = useState('user')
 
-  // Password reset inline state
+  // Password Reset State
   const [resetPwdUserId, setResetPwdUserId] = useState<string | null>(null)
   const [newPassword, setNewPassword] = useState('')
+
+  // Permissions State
+  const [modules, setModules] = useState<ModuleItem[]>([])
+  const [permissions, setPermissions] = useState<Record<string, string[]>>({})
+  const [selectedRole, setSelectedRole] = useState('operator')
+  const [savingPerms, setSavingPerms] = useState(false)
 
   // Messages
   const [errorMsg, setErrorMsg] = useState('')
@@ -33,13 +55,29 @@ export default function UsersManagementPage() {
 
   async function fetchUsers() {
     setLoading(true)
-    const { data, error } = await supabase.from('profiles').select('*').order('id')
-    if (!error && data) setUsers(data as UserProfile[])
+    const { data } = await supabase.from('profiles').select('*').order('id')
+    if (data) setUsers(data as UserProfile[])
     setLoading(false)
+  }
+
+  async function fetchPermissions() {
+    const res = await fetch('/api/admin/permissions')
+    const data = await res.json()
+    if (res.ok) {
+      setModules(data.modules || [])
+      const map: Record<string, string[]> = {}
+      ROLES.forEach(r => { map[r] = [] })
+      ;(data.permissions || []).forEach((p: RolePermission) => {
+        if (!map[p.role]) map[p.role] = []
+        map[p.role].push(p.module_id)
+      })
+      setPermissions(map)
+    }
   }
 
   useEffect(() => {
     fetchUsers()
+    fetchPermissions()
   }, [])
 
   async function handleCreateUser(e: React.FormEvent) {
@@ -52,7 +90,7 @@ export default function UsersManagementPage() {
       const res = await fetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'create', name, email, password, role }),
+        body: JSON.stringify({ action: 'create', name: fullName, email, password, role }),
       })
       const data = await res.json()
 
@@ -60,7 +98,7 @@ export default function UsersManagementPage() {
         setErrorMsg(data.error || 'Failed to create user')
       } else {
         setSuccessMsg('User successfully created!')
-        setName('')
+        setFullName('')
         setEmail('')
         setPassword('')
         setRole('user')
@@ -93,30 +131,63 @@ export default function UsersManagementPage() {
       setSuccessMsg('Password updated successfully!')
       setResetPwdUserId(null)
       setNewPassword('')
-    } else {
-      const data = await res.json()
-      setErrorMsg(data.error || 'Failed to update password')
     }
   }
 
+  function toggleModulePermission(moduleId: string) {
+    const currentList = permissions[selectedRole] || []
+    const updated = currentList.includes(moduleId)
+      ? currentList.filter(id => id !== moduleId)
+      : [...currentList, moduleId]
+
+    setPermissions({ ...permissions, [selectedRole]: updated })
+  }
+
+  async function handleSavePermissions() {
+    setSavingPerms(true)
+    const res = await fetch('/api/admin/permissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: selectedRole, moduleIds: permissions[selectedRole] || [] }),
+    })
+    if (res.ok) setSuccessMsg(`Module access for "${selectedRole}" updated successfully!`)
+    setSavingPerms(false)
+  }
+
+  // Route Protection Check
+  if (permissionsLoading) {
+    return <div className="p-8 text-sm text-gray-500">Checking permissions...</div>
+  }
+
+  if (!canAccess('settings/users') && !canAccess('settings')) {
+    return (
+      <div className="p-6 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm font-semibold max-w-2xl mx-auto mt-8">
+        Access Denied: You do not have permission to access User Management.
+      </div>
+    )
+  }
+
+  // Group modules by category for UI layout
+  const categories = Array.from(new Set(modules.map(m => m.category)))
+
   return (
-    <div className="max-w-4xl space-y-6">
-      <div className="bg-white p-6 rounded-lg shadow-sm border">
+    <div className="max-w-5xl space-y-8 pb-12">
+      <div>
         <h2 className="text-xl font-bold text-gray-900">User Access Management</h2>
-        <p className="text-sm text-gray-600 mt-1">Manage user roles, account status, and passwords.</p>
+        <p className="text-sm text-gray-600">Manage user accounts, passwords, and module access matrix.</p>
       </div>
 
+      {errorMsg && <div className="bg-red-50 text-red-700 text-xs p-3 rounded-lg border border-red-200">{errorMsg}</div>}
+      {successMsg && <div className="bg-emerald-50 text-emerald-700 text-xs p-3 rounded-lg border border-emerald-200">{successMsg}</div>}
+
+      {/* --- CREATE USER FORM --- */}
       <form onSubmit={handleCreateUser} className="bg-white p-6 rounded-lg shadow-sm border space-y-4">
-        <h3 className="text-sm font-bold text-gray-800 uppercase">Create New User</h3>
-        
-        {errorMsg && <div className="bg-red-50 text-red-700 text-xs p-3 rounded">{errorMsg}</div>}
-        {successMsg && <div className="bg-emerald-50 text-emerald-700 text-xs p-3 rounded">{successMsg}</div>}
-        
+        <h3 className="text-sm font-bold text-gray-800 uppercase tracking-wide">Create New User</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <input 
             type="text" 
-            value={name} 
-            onChange={e => setName(e.target.value)} 
+            value={fullName} 
+            onChange={e => setFullName(e.target.value)} 
             placeholder="Full Name" 
             required 
             className="border rounded-lg p-2 text-sm outline-none focus:border-blue-600" 
@@ -129,7 +200,6 @@ export default function UsersManagementPage() {
             required 
             className="border rounded-lg p-2 text-sm outline-none focus:border-blue-600" 
           />
-          
           <div className="relative">
             <input 
               type={showPassword ? "text" : "password"} 
@@ -147,20 +217,14 @@ export default function UsersManagementPage() {
               {showPassword ? 'Hide' : 'Show'}
             </button>
           </div>
-
           <select 
             value={role} 
             onChange={e => setRole(e.target.value)} 
-            className="border rounded-lg p-2 text-sm font-semibold bg-white outline-none focus:border-blue-600"
+            className="border rounded-lg p-2 text-sm font-semibold bg-white outline-none focus:border-blue-600 capitalize"
           >
-            <option value="user">User</option>
-            <option value="operator">Operator</option>
-            <option value="supervisor">Supervisor</option>
-            <option value="manager">Manager</option>
-            <option value="admin">Admin</option>
+            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
-
         <button 
           type="submit" 
           disabled={isSubmitting}
@@ -170,18 +234,83 @@ export default function UsersManagementPage() {
         </button>
       </form>
 
+      {/* --- MODULE ACCESS CONTROL BY ROLE --- */}
+      <div className="bg-white p-6 rounded-lg shadow-sm border space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b pb-4">
+          <div>
+            <h3 className="text-sm font-bold text-gray-800 uppercase tracking-wide">Role-Based Module Access</h3>
+            <p className="text-xs text-gray-500">Configure which sidebar modules each role can access.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-gray-700">Select Role:</span>
+            <select 
+              value={selectedRole} 
+              onChange={e => setSelectedRole(e.target.value)}
+              className="border rounded-lg px-3 py-1.5 text-xs font-bold bg-gray-50 capitalize outline-none"
+            >
+              {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {selectedRole === 'admin' ? (
+          <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 font-medium">
+            <strong>Admin Role:</strong> Admins automatically have unrestricted access to all modules across the application.
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {categories.map(category => (
+              <div key={category} className="space-y-2">
+                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider">{category}</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {modules.filter(m => m.category === category).map(mod => {
+                    const isChecked = (permissions[selectedRole] || []).includes(mod.id)
+                    return (
+                      <label 
+                        key={mod.id} 
+                        className={`flex items-center gap-3 p-3 rounded-lg border text-xs cursor-pointer transition-all ${
+                          isChecked ? 'bg-blue-50 border-blue-500 font-bold text-blue-900 shadow-sm' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleModulePermission(mod.id)}
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        {mod.name}
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+
+            <button
+              type="button"
+              onClick={handleSavePermissions}
+              disabled={savingPerms}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors disabled:opacity-50"
+            >
+              {savingPerms ? 'Saving...' : `Save Module Access for ${selectedRole.toUpperCase()}`}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* --- EXISTING USERS TABLE --- */}
       <div className="bg-white p-6 rounded-lg shadow-sm border space-y-4">
-        <h3 className="text-sm font-bold text-gray-800 uppercase">Existing Users</h3>
+        <h3 className="text-sm font-bold text-gray-800 uppercase tracking-wide">Existing Users</h3>
         {loading ? (
           <p className="text-sm text-gray-500">Loading users...</p>
         ) : (
           <div className="divide-y">
             {users.map(u => (
-              <div key={u.id} className="py-4 space-y-2">
+              <div key={u.id} className="py-4 space-y-3">
                 <div className="flex items-center justify-between text-sm">
                   <div>
-                    <p className="font-mono font-medium text-gray-900">{u.email || u.id}</p>
-                    <p className="text-xs text-gray-500">Status: {u.is_active ? 'Active' : 'Deactivated'}</p>
+                    <p className="font-bold text-gray-900">{u.full_name || 'No Name'}</p>
+                    <p className="font-mono text-xs text-gray-500">{u.email}</p>
                   </div>
                   <div className="flex gap-2 items-center">
                     <button
@@ -194,13 +323,9 @@ export default function UsersManagementPage() {
                     <select 
                       value={u.role || 'user'} 
                       onChange={e => handleUpdateUser(u.id, e.target.value, u.is_active)}
-                      className="border rounded p-1.5 text-xs font-bold bg-white"
+                      className="border rounded p-1.5 text-xs font-bold bg-white capitalize"
                     >
-                      <option value="user">User</option>
-                      <option value="operator">Operator</option>
-                      <option value="supervisor">Supervisor</option>
-                      <option value="manager">Manager</option>
-                      <option value="admin">Admin</option>
+                      {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                     </select>
                     <button 
                       type="button"
@@ -215,7 +340,7 @@ export default function UsersManagementPage() {
                 </div>
 
                 {resetPwdUserId === u.id && (
-                  <div className="flex gap-2 pt-2 items-center bg-gray-50 p-2 rounded-lg border">
+                  <div className="flex gap-2 p-2 bg-gray-50 rounded-lg border items-center">
                     <input
                       type="text"
                       value={newPassword}

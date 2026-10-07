@@ -10,7 +10,7 @@ const settingsModules = [
   {
     title: "Technicians / Vendors",
     description: "Manage staff, vendors, and teams",
-    href: "/dashboard/settings/technician-vendors",
+    href: "/dashboard/settings/technicians",
     icon: Users,
     iconBg: "bg-purple-100 text-purple-600",
   },
