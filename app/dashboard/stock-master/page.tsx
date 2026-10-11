@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
+import Link from 'next/link'
 import * as XLSX from 'xlsx'
 
 // Maps your Excel's exact header names (normalized: lowercase, no spaces)
@@ -152,13 +153,21 @@ export default function StockMasterPage() {
 
   return (
     <div className="max-w-2xl space-y-6">
-      <div className="bg-white p-6 rounded-lg shadow-sm border">
-        <h2 className="text-xl font-bold text-gray-900">Stock Master</h2>
-        <p className="text-sm text-gray-600 mt-1">
-          Bulk-upload your device master Excel file. Rows are matched by IMEI — uploading a file
-          with an IMEI that's already in the system updates that row instead of duplicating it.
-          Only the known columns are read; anything else in the file is ignored.
-        </p>
+      <div className="bg-white p-6 rounded-lg shadow-sm border flex justify-between items-start gap-4">
+        <div>
+          <h2 className="text-xl font-bold text-gray-900">Stock Master</h2>
+          <p className="text-sm text-gray-600 mt-1">
+            Bulk-upload your device master Excel file. Rows are matched by IMEI — uploading a file
+            with an IMEI that's already in the system updates that row instead of duplicating it.
+            Only the known columns are read; anything else in the file is ignored.
+          </p>
+        </div>
+        <Link
+          href="/dashboard/stock-master/inventory-summary"
+          className="shrink-0 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold whitespace-nowrap"
+        >
+          Inventory Summary →
+        </Link>
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow-sm border space-y-4">

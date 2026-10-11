@@ -44,7 +44,7 @@ export default function DashboardHome() {
       id: 'trace-history',
       name: 'Trace Repair History', 
       desc: 'Track history and scan logs', 
-      href: '/dashboard/trace-history/imei-history', 
+      href: '/dashboard/trace-history', 
       icon: <History className="w-6 h-6 text-emerald-600" />, 
       color: 'bg-emerald-50' 
     },

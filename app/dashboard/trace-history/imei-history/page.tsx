@@ -244,23 +244,64 @@ export default function TraceImeiHistoryPage() {
       )}
 
       {/* Stock Master fallback — IMEI exists in inventory but has no repair history yet */}
-      {stockMasterRecord && (
-        <div className="bg-slate-50 border border-slate-200 p-6 rounded-lg shadow-sm space-y-3">
-          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">
-            Stock Master Record <span className="font-normal normal-case text-gray-500">(no repair history yet)</span>
-          </h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-            {Object.entries(stockMasterRecord)
-              .filter(([key, val]) => !['id', 'created_at', 'updated_at'].includes(key) && val)
-              .map(([key, val]) => (
-                <div key={key}>
-                  <span className="text-gray-500 block capitalize">{key.replace(/_/g, ' ')}</span>
-                  <span className="font-medium text-gray-900 text-sm font-mono">{String(val)}</span>
+      {stockMasterRecord && (() => {
+        const r = stockMasterRecord
+        // Same rule as Inventory Summary: blank/0/no/false/none/n/a = no fail.
+        const failText = String(r.fail ?? '').trim()
+        const hasFail = failText !== '' && !['0', 'no', 'false', 'none', 'n/a'].includes(failText.toLowerCase())
+
+        const fields: [string, any][] = [
+          ['IMEI', r.imei],
+          ['IMEI 2', r.imei2],
+          ['Model', r.model],
+          ['GB', r.gb],
+          ['Color', r.color],
+          ['Grade', r.grade],
+          ['Model No', r.model_no],
+          ['Serial No', r.serial],
+          ['Region Code', r.region_code],
+          ['Battery Serial', r.battery_serial],
+          ['Battery Health', r.battery_health],
+          ['Cycle Count', r.cycle_count],
+          ['MDM Lock', r.mdm_lock],
+          ['SIM Lock', r.sim_lock],
+          ['Tester Name', r.tester_name],
+          ['Test Time', r.test_time]
+        ]
+
+        return (
+          <div className="bg-slate-50 border border-slate-200 p-6 rounded-lg shadow-sm space-y-4">
+            <div className="flex justify-between items-center gap-3">
+              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">
+                Stock Master Record <span className="font-normal normal-case text-gray-500">(no repair history yet)</span>
+              </h3>
+              {hasFail ? (
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800">FAIL</span>
+              ) : (
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">PASS (OK phone)</span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+              {fields.map(([label, val]) => (
+                <div key={label}>
+                  <span className="text-gray-500 block">{label}</span>
+                  <span className="font-medium text-gray-900 text-sm font-mono break-all">
+                    {val !== null && val !== undefined && String(val).trim() !== '' ? String(val) : '—'}
+                  </span>
                 </div>
               ))}
+            </div>
+
+            {hasFail && (
+              <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs">
+                <span className="block font-bold text-rose-800 mb-1">Fail details</span>
+                <span className="text-rose-900 break-words">{failText}</span>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Repair History Table */}
       {historyItems.length > 0 && (

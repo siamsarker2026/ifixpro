@@ -159,7 +159,7 @@ export default function UsersManagementPage() {
     return <div className="p-8 text-sm text-gray-500">Checking permissions...</div>
   }
 
-  if (!canAccess('settings/users') && !canAccess('settings')) {
+  if (!canAccess('settings/users')) {
     return (
       <div className="p-6 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm font-semibold max-w-2xl mx-auto mt-8">
         Access Denied: You do not have permission to access User Management.
