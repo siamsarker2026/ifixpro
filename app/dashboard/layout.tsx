@@ -74,6 +74,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Link href="/dashboard/box-builder" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300 font-medium flex items-center gap-2">
             <span>📦</span> Box Builder
           </Link>
+          <Link href="/dashboard/parts" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300 font-medium flex items-center gap-2"><span>🔩</span> Parts Inventory</Link>
 
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mt-6 mb-2 px-3">Repair</div>
           <Link href="/dashboard/repair-request" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Repair Request</Link>

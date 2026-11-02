@@ -12,23 +12,9 @@
   <rect x="62" y="26" width="76" height="148" rx="16" fill="#F2F7FB"/>
   <rect x="68" y="38" width="64" height="124" rx="8" fill="#0B1F33"/>
   <rect x="90" y="30.5" width="20" height="3.6" rx="1.8" fill="#9DB3C6"/>
-  <!-- crack -->
-  <path d="M104 38 L98 68 L110 84 L99 108 L108 126 L102 162" fill="none" stroke="#8FD8F2" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
-  <path d="M110 84 L124 90 M99 108 L84 114" fill="none" stroke="#8FD8F2" stroke-width="1.6" stroke-linecap="round" opacity=".75"/>
-  <!-- precision screwdriver (outlined for separation) -->
-  <g transform="translate(100 100) rotate(42)">
-    <g fill="#0F2A44" stroke="#0F2A44" stroke-width="7" stroke-linejoin="round" stroke-linecap="round">
-      <rect x="-10" y="-74" width="20" height="50" rx="10"/>
-      <rect x="-7" y="-27" width="14" height="12" rx="2"/>
-      <rect x="-2.4" y="-16" width="4.8" height="58"/>
-      <path d="M-2.4 40 L2.4 40 L1.2 56 L-1.2 56 Z"/>
-    </g>
-    <rect x="-10" y="-74" width="20" height="50" rx="10" fill="url(#tli)"/>
-    <g stroke="#0F8F78" stroke-width="1.6" stroke-linecap="round" opacity=".7">
-      <path d="M-6 -62 L-6 -36 M0 -64 L0 -34 M6 -62 L6 -36"/>
-    </g>
-    <rect x="-7" y="-27" width="14" height="12" rx="2" fill="#B9CBDA"/>
-    <rect x="-2.4" y="-16" width="4.8" height="58" fill="#DCE8F1"/>
-    <path d="M-2.4 40 L2.4 40 L1.2 56 L-1.2 56 Z" fill="#DCE8F1"/>
+  <g transform="translate(100 100) scale(0.8) translate(-100 -100)">
+  <!-- gear with check (service done) -->
+  <path d="M93.81 75.78 L95.07 67.37 L104.93 67.37 L106.19 75.78 A25.0 25.0 0 0 1 112.75 78.50 L119.59 73.44 L126.56 80.41 L121.50 87.25 A25.0 25.0 0 0 1 124.22 93.81 L132.63 95.07 L132.63 104.93 L124.22 106.19 A25.0 25.0 0 0 1 121.50 112.75 L126.56 119.59 L119.59 126.56 L112.75 121.50 A25.0 25.0 0 0 1 106.19 124.22 L104.93 132.63 L95.07 132.63 L93.81 124.22 A25.0 25.0 0 0 1 87.25 121.50 L80.41 126.56 L73.44 119.59 L78.50 112.75 A25.0 25.0 0 0 1 75.78 106.19 L67.37 104.93 L67.37 95.07 L75.78 93.81 A25.0 25.0 0 0 1 78.50 87.25 L73.44 80.41 L80.41 73.44 L87.25 78.50 A25.0 25.0 0 0 1 93.81 75.78 Z M113 100 A13 13 0 1 0 87 100 A13 13 0 1 0 113 100 Z" fill-rule="evenodd" fill="url(#tli)"/>
+  <path d="M93.5 100.5 L98.5 105.5 L107.5 94.5" fill="none" stroke="#FFFFFF" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 </svg>

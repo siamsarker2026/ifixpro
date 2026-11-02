@@ -2,6 +2,13 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { masterSupabase } from '@/lib/masterSupabase'
+import { playSuccess, playError, playWarning } from '@/lib/sounds'
+
+// A "placeholder number" is a short numeric tag (e.g. 102, 103) used for a phone
+// that has no readable IMEI (dead / no power). Real IMEIs are 15 digits, so a
+// plain 1-6 digit number can never be confused with one.
+const PLACEHOLDER_RE = /^\d{1,6}$/
 
 interface QueueItem {
   id: string
@@ -12,6 +19,9 @@ interface QueueItem {
   status: 'Queued' | 'Processing' | 'Saved' | 'Error'
   errorMsg?: string
   time: string
+  // Set only for placeholder numbers: the model typed in by the user (there is
+  // no Master Data record to read it from).
+  placeholderModel?: string
 }
 
 export default function RepairRequestPage() {
@@ -36,6 +46,12 @@ export default function RepairRequestPage() {
 
   const imeiInputRef = useRef<HTMLInputElement>(null)
 
+  // Placeholder-number flow: after a number like 102 is scanned we ask for the model.
+  const [pendingPlaceholder, setPendingPlaceholder] = useState<string | null>(null)
+  const [placeholderModel, setPlaceholderModel] = useState('')
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const modelInputRef = useRef<HTMLInputElement>(null)
+
   // Applied to every IMEI scanned in this batch — e.g. the battery brand
   // used for this whole run of assignments. Not per-IMEI entry.
   const [batchRemarks, setBatchRemarks] = useState('')
@@ -49,6 +65,13 @@ export default function RepairRequestPage() {
   useEffect(() => {
     processQueue()
   }, [queue])
+
+  useEffect(() => {
+    if (!statusMessage) return
+    if (statusMessage.type === 'error') playError()
+    else if (statusMessage.type === 'success') playSuccess()
+    else if (statusMessage.type === 'info') playWarning()
+  }, [statusMessage])
 
   // When technician changes, load their active session items
   useEffect(() => {
@@ -76,6 +99,14 @@ export default function RepairRequestPage() {
     const { data: servData } = await supabase.from('services').select('*').eq('is_active', true)
     if (servData && servData.length > 0) {
       setServices(servData)
+    }
+
+    // Model suggestions for placeholder phones (optional - typing still works if this fails)
+    try {
+      const { data: opts } = await masterSupabase.rpc('inventory_filter_options')
+      if (opts && Array.isArray((opts as any).models)) setModelOptions((opts as any).models)
+    } catch {
+      /* suggestions are a convenience only */
     }
 
     setLoading(false)
@@ -140,10 +171,11 @@ export default function RepairRequestPage() {
         .select('id')
         .eq('technician_id', technicianId)
         .eq('imei', cleanImei)
+        .eq('current_status', 'Assigned')
         .maybeSingle()
 
       if (matchError || !existingMatch) {
-        setStatusMessage({ text: 'IMEI is not assigned to this technician.', type: 'error' })
+        setStatusMessage({ text: 'IMEI is not currently assigned to this technician.', type: 'error' })
         return
       }
 
@@ -177,14 +209,28 @@ export default function RepairRequestPage() {
       return
     }
 
+    // Placeholder number (no IMEI / no power): ask for the model before queuing.
+    if (PLACEHOLDER_RE.test(cleanImei)) {
+      setImeiInput('')
+      setPlaceholderModel('')
+      setPendingPlaceholder(cleanImei)
+      setTimeout(() => modelInputRef.current?.focus(), 0)
+      return
+    }
+
+    queueItem(cleanImei)
+  }
+
+  function queueItem(imei: string, model?: string) {
     const newQueueItem: QueueItem = {
       id: `${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-      imei: cleanImei,
+      imei,
       technicianId: technicianId,
       services: [...selectedServices],
       remarks: batchRemarks.trim(),
       status: 'Queued',
-      time: new Date().toLocaleTimeString()
+      time: new Date().toLocaleTimeString(),
+      placeholderModel: model
     }
 
     setQueue(prev => [newQueueItem, ...prev])
@@ -192,6 +238,22 @@ export default function RepairRequestPage() {
     if (imeiInputRef.current) {
       imeiInputRef.current.focus()
     }
+  }
+
+  function handleModelSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const model = placeholderModel.trim()
+    if (!pendingPlaceholder || !model) return
+    queueItem(pendingPlaceholder, model)
+    setPendingPlaceholder(null)
+    setPlaceholderModel('')
+    setTimeout(() => imeiInputRef.current?.focus(), 0)
+  }
+
+  function cancelPlaceholder() {
+    setPendingPlaceholder(null)
+    setPlaceholderModel('')
+    setTimeout(() => imeiInputRef.current?.focus(), 0)
   }
 
   async function processQueue() {
@@ -220,11 +282,19 @@ export default function RepairRequestPage() {
         throw new Error('IMEI is currently active (Assigned) in another repair flow.')
       }
 
-      const res = await fetch(`/api/device?imei=${nextItem.imei}`)
-      const apiResult = await res.json()
+      // Placeholder numbers have no Master Data record - the model was typed in.
+      let device: { model: any; gb: any; color: any }
+      if (nextItem.placeholderModel) {
+        // storage/colour columns don't accept null, so use empty text (reports show it as —)
+        device = { model: nextItem.placeholderModel, gb: '', color: '' }
+      } else {
+        const res = await fetch(`/api/device?imei=${nextItem.imei}`)
+        const apiResult = await res.json()
 
-      if (!apiResult.success || !apiResult.device) {
-        throw new Error(apiResult.error || 'IMEI not found in Master Database')
+        if (!apiResult.success || !apiResult.device) {
+          throw new Error(apiResult.error || 'IMEI not found in Master Database')
+        }
+        device = apiResult.device
       }
 
       const serviceIdsArray = nextItem.services.map((s: any) => s.id)
@@ -236,9 +306,9 @@ export default function RepairRequestPage() {
           technician_id: nextItem.technicianId,
           service_ids: serviceIdsArray,
           imei: nextItem.imei,
-          model: apiResult.device.model,
-          storage_gb: apiResult.device.gb,
-          color: apiResult.device.color,
+          model: device.model,
+          storage_gb: device.gb,
+          color: device.color,
           current_status: 'Assigned',
           assigned_by: user ? user.id : null,
           remarks: nextItem.remarks || null
@@ -443,6 +513,30 @@ export default function RepairRequestPage() {
           </div>
         )}
 
+        {pendingPlaceholder && (
+          <form onSubmit={handleModelSubmit} className="mb-4 p-4 rounded-lg border border-amber-300 bg-amber-50 space-y-3">
+            <p className="text-sm font-medium text-amber-900">
+              Number <span className="font-mono font-bold">{pendingPlaceholder}</span> is not an IMEI (no Master Data record). Enter the phone model to assign it.
+            </p>
+            <div className="flex gap-2">
+              <input
+                ref={modelInputRef}
+                list="placeholder-models"
+                type="text"
+                value={placeholderModel}
+                onChange={(e) => setPlaceholderModel(e.target.value)}
+                placeholder="e.g. iPhone 13 Pro — press Enter"
+                className="flex-1 bg-white text-gray-900 placeholder:text-gray-400 border border-gray-300 p-2.5 rounded-lg text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+              />
+              <datalist id="placeholder-models">
+                {modelOptions.map(m => <option key={m} value={m} />)}
+              </datalist>
+              <button type="submit" disabled={!placeholderModel.trim()} className="bg-slate-900 text-white px-4 rounded-lg text-sm disabled:opacity-40 cursor-pointer">Assign</button>
+              <button type="button" onClick={cancelPlaceholder} className="border border-gray-300 text-gray-700 px-4 rounded-lg text-sm cursor-pointer">Cancel</button>
+            </div>
+          </form>
+        )}
+
         <form onSubmit={handleScanSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -455,7 +549,7 @@ export default function RepairRequestPage() {
               placeholder={isRemoveMode ? 'Scan IMEI to remove...' : 'Scan barcode or type IMEI and press enter...'}
               value={imeiInput}
               onChange={(e) => setImeiInput(e.target.value)}
-              disabled={!isRemoveMode && (!technicianId || selectedServices.length === 0)}
+              disabled={!!pendingPlaceholder || (!isRemoveMode && (!technicianId || selectedServices.length === 0))}
               className={`w-full bg-white text-gray-900 placeholder:text-gray-400 border p-3 rounded-lg focus:ring-2 outline-none font-mono disabled:bg-gray-100 disabled:cursor-not-allowed ${
                 isRemoveMode ? 'border-red-300 focus:ring-red-600' : 'border-gray-300 focus:ring-slate-900'
               }`}

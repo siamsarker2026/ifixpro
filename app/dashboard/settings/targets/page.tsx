@@ -10,8 +10,8 @@ export default function DailyTargetPage() {
   const [loading, setLoading] = useState(true)
 
   // Time Parameters State
-  const [startTime, setStartTime] = useState('09:45')
-  const [endTime, setEndTime] = useState('19:30')
+  const [startTime, setStartTime] = useState('11:00')
+  const [endTime, setEndTime] = useState('21:00')
   const [lunchMins, setLunchMins] = useState(60)
   const [prayerMins, setPrayerMins] = useState(30)
   const [cleaningMins, setCleaningMins] = useState(30)

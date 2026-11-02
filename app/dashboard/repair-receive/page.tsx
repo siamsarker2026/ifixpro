@@ -2,6 +2,11 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { playSuccess, playError, playWarning } from '@/lib/sounds'
+
+// Short numeric tag (e.g. 102) used at assignment for a phone with no readable
+// IMEI. Real IMEIs are 15 digits, so the two can never be confused.
+const PLACEHOLDER_RE = /^\d{1,6}$/
 
 interface QueueItem {
   id: string
@@ -41,6 +46,13 @@ export default function RepairReceivePage() {
   queueRef.current = queue
 
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Placeholder flow: a number like 102 was entered -> ask for the real IMEI.
+  const [pendingReplace, setPendingReplace] = useState<{ number: string; itemId: string; model: string | null; remarks: string | null } | null>(null)
+  const [replaceInput, setReplaceInput] = useState('')
+  const [replaceError, setReplaceError] = useState('')
+  const [replaceBusy, setReplaceBusy] = useState(false)
+  const replaceInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     fetchServices()
@@ -107,16 +119,115 @@ export default function RepairReceivePage() {
     return 'Repaired'
   }
 
-  function handleScanSubmit(e: React.FormEvent) {
+  async function handleScanSubmit(e: React.FormEvent) {
     e.preventDefault()
     const cleanImei = imeiInput.trim()
     if (!cleanImei) return
 
     if (mode === 'reject' && !rejectionReason.trim()) {
+      playWarning()
       alert('Please enter a rejection reason before scanning in Reject mode.')
       return
     }
 
+    // Placeholder number -> find the Assigned phone carrying it, then ask for the real IMEI.
+    if (PLACEHOLDER_RE.test(cleanImei)) {
+      setImeiInput('')
+      setReplaceError('')
+      const { data: found, error: findErr } = await supabase
+        .from('repair_request_items')
+        .select('id, model, remarks')
+        .eq('imei', cleanImei)
+        .eq('current_status', 'Assigned')
+        .maybeSingle()
+
+      if (findErr || !found) {
+        playError()
+        setReplaceError(`No phone currently assigned with number ${cleanImei}.`)
+        return
+      }
+      setReplaceInput('')
+      setPendingReplace({ number: cleanImei, itemId: found.id, model: found.model, remarks: found.remarks })
+      setTimeout(() => replaceInputRef.current?.focus(), 0)
+      return
+    }
+
+    enqueueReceive(cleanImei)
+  }
+
+  async function handleReplaceSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!pendingReplace || replaceBusy) return
+    const realImei = replaceInput.trim()
+    if (!realImei) return
+    setReplaceError('')
+
+    if (!/^\d{15}$/.test(realImei)) {
+      playError()
+      setReplaceError('Scan a valid 15-digit IMEI.')
+      return
+    }
+
+    setReplaceBusy(true)
+    try {
+      // The real IMEI must not already be an active (Assigned) phone elsewhere.
+      const { data: active } = await supabase
+        .from('repair_request_items')
+        .select('id')
+        .eq('imei', realImei)
+        .eq('current_status', 'Assigned')
+        .limit(1)
+      if (active && active.length > 0) {
+        throw new Error(`IMEI ${realImei} is already assigned in another repair flow.`)
+      }
+
+      // Pull model/storage/colour from Master Data if the IMEI is there (optional).
+      const patch: any = { imei: realImei }
+      try {
+        const res = await fetch(`/api/device?imei=${realImei}`)
+        const r = await res.json()
+        if (r.success && r.device) {
+          patch.model = r.device.model ?? pendingReplace.model
+          patch.storage_gb = r.device.gb ?? ''
+          patch.color = r.device.color ?? ''
+        }
+      } catch {
+        /* Master lookup is a bonus - keep the typed model if it fails */
+      }
+      const note = `Placeholder ${pendingReplace.number} replaced by IMEI ${realImei}`
+      patch.remarks = pendingReplace.remarks ? `${pendingReplace.remarks} | ${note}` : note
+
+      const { error: updErr } = await supabase
+        .from('repair_request_items')
+        .update(patch)
+        .eq('id', pendingReplace.itemId)
+      if (updErr) throw new Error(updErr.message)
+
+      // Keep the history log consistent with the new identifier.
+      await supabase
+        .from('repair_history_events')
+        .update({ imei: realImei })
+        .eq('repair_request_item_id', pendingReplace.itemId)
+
+      setPendingReplace(null)
+      setReplaceInput('')
+      enqueueReceive(realImei)
+    } catch (err: any) {
+      playError()
+      setReplaceError(err.message || 'Could not replace the number.')
+    } finally {
+      setReplaceBusy(false)
+    }
+  }
+
+  function cancelReplace() {
+    setPendingReplace(null)
+    setReplaceInput('')
+    setReplaceError('')
+    setTimeout(() => inputRef.current?.focus(), 0)
+  }
+
+  function enqueueReceive(cleanImei: string) {
     const alreadyQueued = queueRef.current.some(q => q.imei === cleanImei && (q.status === 'Queued' || q.status === 'Processing'))
     if (alreadyQueued) {
       setImeiInput('')
@@ -327,7 +438,8 @@ export default function RepairReceivePage() {
       }
 
       setQueue(prev => prev.map(q => q.id === nextItem.id ? { ...q, status: 'Success', details: successDetails } : q))
-      
+      playSuccess()
+
       setRecentProcessed(prev => [{
         imei: nextItem.imei,
         mode: nextItem.mode,
@@ -339,6 +451,7 @@ export default function RepairReceivePage() {
 
     } catch (err: any) {
       setQueue(prev => prev.map(q => q.id === nextItem.id ? { ...q, status: 'Error', errorMsg: err.message || 'Failed' } : q))
+      playError()
     } finally {
       processingRef.current = false
       setTimeout(() => processQueue(), 20)
@@ -410,6 +523,28 @@ export default function RepairReceivePage() {
 
       {/* Continuous Scanner Input Form */}
       <div className={`p-6 rounded-lg shadow-sm border ${mode === 'receive' ? 'bg-white' : 'bg-red-50/20 border-red-200'}`}>
+        {pendingReplace && (
+          <form onSubmit={handleReplaceSubmit} className="mb-4 p-4 rounded-lg border border-amber-300 bg-amber-50 space-y-3">
+            <p className="text-sm font-medium text-amber-900">
+              Number <span className="font-mono font-bold">{pendingReplace.number}</span>
+              {pendingReplace.model ? ` (${pendingReplace.model})` : ''} found. Scan the real IMEI to replace it, then it will be received.
+            </p>
+            <div className="flex gap-2">
+              <input
+                ref={replaceInputRef}
+                type="text"
+                value={replaceInput}
+                onChange={(e) => setReplaceInput(e.target.value)}
+                placeholder="Scan IMEI / Replace IMEI..."
+                disabled={replaceBusy}
+                className="flex-1 bg-white text-gray-900 placeholder:text-gray-400 border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-slate-900 outline-none font-mono"
+              />
+              <button type="button" onClick={cancelReplace} className="border border-gray-300 text-gray-700 px-4 rounded-lg text-sm cursor-pointer">Cancel</button>
+            </div>
+          </form>
+        )}
+        {replaceError && <p className="mb-3 text-sm font-medium text-red-700">{replaceError}</p>}
+
         <form onSubmit={handleScanSubmit} className="space-y-3">
           <label className="block text-sm font-bold text-gray-900">
             {mode === 'receive' ? '📥 Continuous Scan IMEI to Receive' : '❌ Continuous Scan IMEI to Reject'}
@@ -422,7 +557,8 @@ export default function RepairReceivePage() {
               placeholder="Scan barcode or type IMEI..."
               value={imeiInput}
               onChange={(e) => setImeiInput(e.target.value)}
-              className="flex-1 bg-white text-gray-900 placeholder:text-gray-400 border border-gray-300 p-3.5 rounded-lg focus:ring-2 focus:ring-slate-900 outline-none font-mono text-base"
+              disabled={!!pendingReplace}
+              className="flex-1 bg-white disabled:bg-gray-100 text-gray-900 placeholder:text-gray-400 border border-gray-300 p-3.5 rounded-lg focus:ring-2 focus:ring-slate-900 outline-none font-mono text-base"
             />
           </div>
           <p className="text-xs text-gray-500">Input auto-clears instantly so you can scan the next device right away.</p>

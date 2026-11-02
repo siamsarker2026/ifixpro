@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react'
 import Link from 'next/link'
 import * as XLSX from 'xlsx'
+import { supabase } from '@/lib/supabase'
 
 // Maps your Excel's exact header names (normalized: lowercase, no spaces)
 // to the device_master column they fill. Any header NOT in this map is
@@ -121,6 +122,10 @@ export default function StockMasterPage() {
       setUploading(true)
       setProgress({ done: 0, total: mappedRows.length })
 
+      // The upload route only accepts signed-in users, so send the session token.
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Your session has expired. Please log in again.')
+
       let totalUpserted = 0
       let totalSkipped = 0
 
@@ -128,7 +133,10 @@ export default function StockMasterPage() {
         const batch = mappedRows.slice(i, i + BATCH_SIZE)
         const res = await fetch('/api/stock-master/upload', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`
+          },
           body: JSON.stringify({ rows: batch })
         })
         const result = await res.json()

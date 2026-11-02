@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
+import { playSuccess, playError } from '@/lib/sounds'
 
 export default function TraceImeiHistoryPage() {
   const [imeiInput, setImeiInput] = useState('')
@@ -22,6 +23,24 @@ export default function TraceImeiHistoryPage() {
   const [renaming, setRenaming] = useState(false)
   const [renameError, setRenameError] = useState('')
   const [renameSuccess, setRenameSuccess] = useState('')
+
+  // Sounds: error tone when nothing is found / a search or rename fails,
+  // soft chime when a search finds a record or a rename succeeds.
+  useEffect(() => {
+    if (errorMsg) playError()
+  }, [errorMsg])
+
+  useEffect(() => {
+    if (renameError) playError()
+  }, [renameError])
+
+  useEffect(() => {
+    if (renameSuccess) playSuccess()
+  }, [renameSuccess])
+
+  useEffect(() => {
+    if (historyItems.length > 0 || stockMasterRecord) playSuccess()
+  }, [historyItems, stockMasterRecord])
 
   async function handleSearch(e: React.FormEvent, overrideImei?: string) {
     e.preventDefault()
