@@ -19,8 +19,26 @@ const ALLOWED_COLUMNS = new Set([
   'test_time', 'sim_lock'
 ])
 
+// Only signed-in users of this app may upload. The browser sends its Supabase
+// session token; we check it against the MAIN project (where users live).
+const authSupabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
+
+async function requireSignedInUser(request: Request) {
+  const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '')
+  if (!token) return false
+  const { data, error } = await authSupabase.auth.getUser(token)
+  return !error && !!data.user
+}
+
 export async function POST(request: Request) {
   try {
+    if (!(await requireSignedInUser(request))) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 })
+    }
+
     const body = await request.json()
     const rows = Array.isArray(body?.rows) ? body.rows : null
 

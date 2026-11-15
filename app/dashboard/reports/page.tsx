@@ -21,6 +21,13 @@ const reportsModules = [
     icon: FileText,
     iconBg: "bg-blue-100 text-blue-600",
   },
+  {
+    title: "Damage Parts",
+    description: "Track and manage damaged parts",
+    href: "/dashboard/reports/damage-parts",
+    icon: Wrench,
+    iconBg: "bg-red-100 text-red-600",
+  },
 ];
 
 export default function ReportsPage() {

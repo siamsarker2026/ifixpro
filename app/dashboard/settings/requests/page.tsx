@@ -44,6 +44,10 @@ export default function DailyTechnicianStockPage() {
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set())
   const [bulkRemarksText, setBulkRemarksText] = useState('')
   const [savingRemarks, setSavingRemarks] = useState(false)
+  // Manual "other work" note per technician for the selected day (e.g.
+  // "20 pcs Glue remove + 70 pcs clay"). Holds what is being typed until the
+  // field is left, then it is saved to daily_technician_stock.other_work.
+  const [otherWorkDraft, setOtherWorkDraft] = useState<Record<string, string>>({})
   // Rows shown in the Repair Request List: IMEIs assigned on the selected day
   // PLUS IMEIs carried over (still with the technician when the day started).
   // `dateItems` stays "assigned on the selected day only" because the stock
@@ -51,6 +55,7 @@ export default function DailyTechnicianStockPage() {
   const [listItems, setListItems] = useState<any[]>([])
 
   useEffect(() => {
+    setOtherWorkDraft({})
     fetchData()
   }, [selectedDate])
 
@@ -314,6 +319,45 @@ export default function DailyTechnicianStockPage() {
     fetchData()
   }
 
+  async function saveOtherWork(row: any) {
+    if (isDayLocked) return
+    const stored = (row.other_work ?? '').trim()
+    const text = (otherWorkDraft[row.id] ?? stored).trim()
+    if (text === stored) {
+      setOtherWorkDraft(prev => { const n = { ...prev }; delete n[row.id]; return n })
+      return
+    }
+    const value = text === '' ? null : text
+
+    if (row.stock_record_id) {
+      const { error } = await supabase
+        .from('daily_technician_stock')
+        .update({ other_work: value })
+        .eq('id', row.stock_record_id)
+      if (error) {
+        alert('Error saving remarks: ' + error.message)
+        return
+      }
+    } else {
+      const { error } = await supabase
+        .from('daily_technician_stock')
+        .insert({
+          technician_id: row.id,
+          stock_date: selectedDate,
+          opening_pending: row.opening_pending,
+          newly_given: row.newly_given,
+          closing_pending: row.closing_pending,
+          other_work: value
+        })
+      if (error) {
+        alert('Error saving remarks: ' + error.message)
+        return
+      }
+    }
+    setOtherWorkDraft(prev => { const n = { ...prev }; delete n[row.id]; return n })
+    fetchData()
+  }
+
   async function handleLockDay() {
     if (!allRequiredMatched) return
     if (!confirm(`Are you sure you want to permanently lock the daily stock and verification records for ${selectedDate}?`)) return
@@ -400,14 +444,14 @@ export default function DailyTechnicianStockPage() {
   }
 
   function downloadPDF() {
-    const doc = new jsPDF()
+    const doc = new jsPDF({ orientation: 'landscape' })
     doc.setFontSize(16)
     doc.text(`Technician Daily Operational & Stock Matrix`, 14, 20)
     doc.setFontSize(10)
     doc.text(`Date: ${selectedDate} | Status: ${isDayLocked ? 'LOCKED & IMMUTABLE' : 'OPEN'}`, 14, 28)
     doc.text(`Verification Progress: ${matchedCount} / ${requiredTechs.length} Technicians Matched`, 14, 34)
 
-    const tableColumn = ['Technician', 'Opening', 'Given', 'Repaired', 'Reworked', 'Opened', 'Checked', 'Closed', 'Rejected', 'Pending', 'Verification']
+    const tableColumn = ['Technician', 'Opening', 'Given', 'Repaired', 'Reworked', 'Opened', 'Checked', 'Closed', 'Rejected', 'Pending', 'Verification', 'Other Work / Remarks']
     const tableRows = rowsWithMetrics.map(r => [
       r.name,
       r.opening_pending,
@@ -419,7 +463,8 @@ export default function DailyTechnicianStockPage() {
       r.closed,
       r.rejected_return,
       r.closing_pending,
-      r.physical_verified ? 'Matched' : 'Pending'
+      r.physical_verified ? 'Matched' : 'Pending',
+      r.other_work || ''
     ])
 
     const totals = matrixTotals
@@ -430,10 +475,11 @@ export default function DailyTechnicianStockPage() {
       foot: [[
         'TOTAL', totals.opening, totals.given, totals.repaired, totals.reworked,
         totals.opened, totals.checked, totals.closed, totals.rejected, totals.pending,
-        `${matchedCount}/${requiredTechs.length}`
+        `${matchedCount}/${requiredTechs.length}`, ''
       ]],
       startY: 42,
       styles: { fontSize: 8 },
+      columnStyles: { 11: { cellWidth: 70 } },
       headStyles: { fillColor: [15, 23, 42] },
       footStyles: { fillColor: [226, 232, 240], textColor: [15, 23, 42], fontStyle: 'bold' }
     })
@@ -533,6 +579,7 @@ export default function DailyTechnicianStockPage() {
             <thead className="bg-slate-900 text-white uppercase font-bold">
               <tr>
                 <th className="p-4">Technician</th>
+                <th className="p-4">Other Work / Remarks</th>
                 <th className="p-4 text-center">Opening</th>
                 <th className="p-4 text-center">Given</th>
                 <th className="p-4 text-center">Repaired</th>
@@ -551,6 +598,19 @@ export default function DailyTechnicianStockPage() {
                   <td className="p-4 font-bold text-slate-900">
                     {row.name}
                     {!row.isRequired && <span className="ml-2 text-[10px] text-gray-400 font-normal">(Inactive)</span>}
+                  </td>
+                  <td className="p-2">
+                    <input
+                      type="text"
+                      value={otherWorkDraft[row.id] ?? row.other_work ?? ''}
+                      onChange={(e) => setOtherWorkDraft(prev => ({ ...prev, [row.id]: e.target.value }))}
+                      onBlur={() => saveOtherWork(row)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                      disabled={isDayLocked || loading}
+                      placeholder="e.g. 20 pcs Glue remove + 70 pcs clay"
+                      maxLength={300}
+                      className="w-64 px-2 py-1.5 text-xs border rounded-md font-normal text-slate-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-slate-900 disabled:bg-gray-50 disabled:text-gray-500"
+                    />
                   </td>
                   <td className="p-4 text-center font-mono text-slate-600">{row.opening_pending}</td>
                   <td className="p-4 text-center font-mono font-bold text-slate-900">{row.totalGiven}</td>
@@ -584,6 +644,7 @@ export default function DailyTechnicianStockPage() {
             <tfoot>
               <tr className="bg-slate-100 font-bold border-t-2 border-slate-300">
                 <td className="p-4 text-slate-900">TOTAL</td>
+                <td className="p-4"></td>
                 <td className="p-4 text-center font-mono text-slate-700">{matrixTotals.opening}</td>
                 <td className="p-4 text-center font-mono text-slate-900">{matrixTotals.given}</td>
                 <td className="p-4 text-center font-mono text-emerald-700">{matrixTotals.repaired}</td>

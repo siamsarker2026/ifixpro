@@ -3,11 +3,11 @@
 // Run from your project folder:
 //   node --env-file=.env.local scripts/drfone-test.mjs "TesterName"
 //
-// data source: .env.local 
-//   DRFONE_ENDPOINT=http:       
+// Needs two lines in .env.local (values never go in chat or in code):
+//   DRFONE_ENDPOINT=http://their-server-address        (no trailing /GetTesterData)
 //   DRFONE_USERID=your-user-id
 //
-// It should print counts, field names and a masked summary only - never full IMEIs
+// It prints counts, field names and a masked summary only - never full IMEIs
 // and never the USERID.
 
 const endpoint = (process.env.DRFONE_ENDPOINT || '').trim().replace(/\/+$/, '')
