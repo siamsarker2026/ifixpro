@@ -22,11 +22,11 @@ const ROUTE_MODULES: [string, string][] = [
   ['/dashboard/reports/efficiency', 'reports/efficiency'],
   ['/dashboard/reports/diagnostics-report', 'reports/diagnostics-report'],
   ['/dashboard/reports/damage-parts', 'reports/damage-parts'],
+  ['/dashboard/reports/requests', 'reports/requests'],
   ['/dashboard/reports', 'reports'],
   ['/dashboard/settings/users', 'settings/users'],
   ['/dashboard/settings/services', 'settings/services'],
   ['/dashboard/settings/technicians', 'settings/technicians'],
-  ['/dashboard/settings/requests', 'settings/requests'],
   ['/dashboard/settings/targets', 'settings/targets'],
   ['/dashboard/settings', 'settings'],
 ]
@@ -36,7 +36,7 @@ const ROUTE_MODULES: [string, string][] = [
 // see them until they are added here.
 export function moduleForPath(pathname: string): string | null {
   const path = pathname.replace(/\/+$/, '') || '/'
-  if (path === '/dashboard') return null
+  if (path === '/dashboard' || path === '/dashboard/account' || path.startsWith('/dashboard/account/')) return null
   let best: [string, string] | undefined
   for (const entry of ROUTE_MODULES) {
     const [prefix] = entry

@@ -7,7 +7,8 @@ import {
   Users, 
   Wrench, 
   FileText, 
-  TrendingUp 
+  TrendingUp,
+  ClipboardList
 } from "lucide-react";
 
 const reportsModules = [
@@ -31,6 +32,13 @@ const reportsModules = [
     href: "/dashboard/reports/damage-parts",
     icon: Wrench,
     iconBg: "bg-red-100 text-red-600",
+  },
+  {
+    title: "Repair Request Lists",
+    description: "View and manage submitted requests",
+    href: "/dashboard/reports/requests",
+    icon: ClipboardList,
+    iconBg: "bg-sky-100 text-sky-600",
   },
 ];
 

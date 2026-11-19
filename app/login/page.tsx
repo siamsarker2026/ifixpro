@@ -11,6 +11,35 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const [loading, setLoading] = useState(false)
+  const [mode, setMode] = useState<'login' | 'forgot'>('login')
+  const [infoMsg, setInfoMsg] = useState('')
+  const [note, setNote] = useState('')
+
+  async function handleForgot(e: React.FormEvent) {
+    e.preventDefault()
+    setLoading(true)
+    setErrorMsg('')
+    setInfoMsg('')
+    try {
+      // Goes to the administrator, who sets the new password
+      const res = await fetch('/api/password-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, note }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setInfoMsg(data.message || 'Your request has been sent to the administrator.')
+        setNote('')
+      } else {
+        setErrorMsg(data.error || 'Could not send the request')
+      }
+    } catch {
+      setErrorMsg('Could not send the request')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -45,6 +74,47 @@ export default function LoginPage() {
           </div>
         )}
 
+        {infoMsg && (
+          <div className="p-3 bg-emerald-50 text-emerald-700 rounded-lg text-xs border border-emerald-200">
+            {infoMsg}
+          </div>
+        )}
+
+        {mode === 'forgot' ? (
+          <form onSubmit={handleForgot} className="space-y-4">
+            <p className="text-xs text-gray-600">Enter your email to ask the administrator to set a new password for you.</p>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full bg-white text-gray-900 border border-gray-300 p-2.5 rounded-lg text-sm outline-none focus:border-blue-600"
+              placeholder="you@example.com"
+            />
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              maxLength={300}
+              rows={2}
+              className="w-full bg-white text-gray-900 border border-gray-300 p-2.5 rounded-lg text-sm outline-none focus:border-blue-600"
+              placeholder="Message for the administrator (optional)"
+            />
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white p-2.5 rounded-lg font-medium text-sm transition-colors disabled:opacity-50"
+            >
+              {loading ? 'Sending...' : 'Request Password Reset'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setMode('login'); setErrorMsg(''); setInfoMsg('') }}
+              className="w-full text-xs text-gray-500 hover:underline"
+            >
+              ← Back to sign in
+            </button>
+          </form>
+        ) : (
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Email Address</label>
@@ -81,7 +151,13 @@ export default function LoginPage() {
           </div>
 
           <div className="flex justify-between items-center text-xs text-gray-500">
-            <span className="cursor-pointer hover:underline">Forgot password?</span>
+            <button
+              type="button"
+              onClick={() => { setMode('forgot'); setErrorMsg(''); setInfoMsg('') }}
+              className="cursor-pointer hover:underline"
+            >
+              Forgot password?
+            </button>
           </div> 
 
           <button         
@@ -92,6 +168,7 @@ export default function LoginPage() {
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+        )}
       </div>
     </div>
   )

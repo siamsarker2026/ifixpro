@@ -7,7 +7,8 @@ import { supabase } from '@/lib/supabase'
 import { useAllowedModules } from '@/hooks/useAllowedModules'
 import { moduleForPath } from '@/lib/modules'
 
-type NavItem = { href: string; module: string; label: React.ReactNode }
+// module: null = every signed-in user sees it
+type NavItem = { href: string; module: string | null; label: React.ReactNode }
 type NavSection = { title: string; items: NavItem[] }
 
 const linkClass = 'block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300'
@@ -35,6 +36,7 @@ const NAV: NavSection[] = [
       { href: '/dashboard/reports/efficiency', module: 'reports/efficiency', label: 'Daily Work Efficiency' },
       { href: '/dashboard/reports/diagnostics-report', module: 'reports/diagnostics-report', label: 'Diagnostics Report' },
       { href: '/dashboard/reports/damage-parts', module: 'reports/damage-parts', label: '🧯 Damage Parts' },
+      { href: '/dashboard/reports/requests', module: 'reports/requests', label: 'Repair Request Lists' },
     ],
   },
   {
@@ -42,8 +44,14 @@ const NAV: NavSection[] = [
     items: [
       { href: '/dashboard/settings/technicians', module: 'settings/technicians', label: 'Technicians / Vendors' },
       { href: '/dashboard/settings/services', module: 'settings/services', label: 'Services' },
-      { href: '/dashboard/settings/requests', module: 'settings/requests', label: 'Repair Request Lists' },
       { href: '/dashboard/settings/targets', module: 'settings/targets', label: 'Daily Target' },
+      { href: '/dashboard/settings/users', module: 'settings/users', label: 'User Access Management' },
+    ],
+  },
+  {
+    title: 'Account',
+    items: [
+      { href: '/dashboard/account', module: null, label: <><span>👤</span> My Account</> },
     ],
   },
 ]
@@ -117,7 +125,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {/* Sidebar links: only modules this user's role may open */}
         <div className="flex-1 overflow-y-auto p-4 space-y-1 text-sm">
           {!accessLoading && NAV.map((section, i) => {
-            const items = section.items.filter(item => canAccess(item.module))
+            const items = section.items.filter(item => item.module === null || canAccess(item.module))
             if (items.length === 0) return null
             return (
               <div key={section.title}>
@@ -136,7 +144,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* User Profile Footer Widget & Logout */}
         <div className="p-4 border-t border-slate-800 bg-slate-950/50 flex items-center justify-between gap-3">
-          <div className="flex items-center space-x-3 overflow-hidden">
+          <Link href="/dashboard/account" title="My Account" className="flex items-center space-x-3 overflow-hidden rounded-lg hover:opacity-80">
             <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
               {userName.charAt(0).toUpperCase()}
             </div>
@@ -144,7 +152,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <p className="text-xs font-bold text-white truncate">{userName}</p>
               <p className="text-[10px] text-slate-400 truncate">{userEmail}</p>
             </div>
-          </div>
+          </Link>
           <button
             onClick={handleLogout}
             className="text-slate-400 hover:text-red-400 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer shrink-0"

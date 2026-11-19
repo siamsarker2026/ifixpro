@@ -23,6 +23,16 @@ interface RolePermission {
   module_id: string
 }
 
+interface PasswordRequest {
+  id: string
+  user_id: string
+  email: string
+  note: string | null
+  created_at: string
+  full_name: string | null
+  role: string | null
+}
+
 const ROLES = ['user', 'operator', 'supervisor', 'manager', 'admin']
 
 export default function UsersManagementPage() {
@@ -53,11 +63,49 @@ export default function UsersManagementPage() {
   const [errorMsg, setErrorMsg] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
 
+  // Password change requests from users
+  const [pwdRequests, setPwdRequests] = useState<PasswordRequest[]>([])
+  const [requestPwd, setRequestPwd] = useState<Record<string, string>>({})
+  const [handlingRequest, setHandlingRequest] = useState<string | null>(null)
+
   async function fetchUsers() {
     setLoading(true)
     const { data } = await supabase.from('profiles').select('*').order('id')
     if (data) setUsers(data as UserProfile[])
     setLoading(false)
+  }
+
+  async function fetchPasswordRequests() {
+    const res = await fetch('/api/admin/password-requests', { cache: 'no-store' })
+    if (res.ok) {
+      const data = await res.json()
+      setPwdRequests(data.requests || [])
+    }
+  }
+
+  async function handlePasswordRequest(id: string, action: 'set' | 'dismiss') {
+    setErrorMsg('')
+    setSuccessMsg('')
+    const password = requestPwd[id] || ''
+    if (action === 'set' && password.length < 8) {
+      setErrorMsg('The new password must be at least 8 characters.')
+      return
+    }
+    setHandlingRequest(id)
+    const res = await fetch('/api/admin/password-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(action === 'set' ? { id, action, password } : { id, action }),
+    })
+    const data = await res.json().catch(() => ({}))
+    setHandlingRequest(null)
+    if (res.ok) {
+      setSuccessMsg(action === 'set' ? 'New password set. Tell the user their new password.' : 'Request dismissed.')
+      setRequestPwd(prev => ({ ...prev, [id]: '' }))
+    } else {
+      setErrorMsg(data.error || 'Could not handle the request')
+    }
+    fetchPasswordRequests()
   }
 
   async function fetchPermissions() {
@@ -78,6 +126,7 @@ export default function UsersManagementPage() {
   useEffect(() => {
     fetchUsers()
     fetchPermissions()
+    fetchPasswordRequests()
   }, [])
 
   async function handleCreateUser(e: React.FormEvent) {
@@ -192,6 +241,55 @@ export default function UsersManagementPage() {
 
       {errorMsg && <div className="bg-red-50 text-red-700 text-xs p-3 rounded-lg border border-red-200">{errorMsg}</div>}
       {successMsg && <div className="bg-emerald-50 text-emerald-700 text-xs p-3 rounded-lg border border-emerald-200">{successMsg}</div>}
+
+      {/* --- PASSWORD CHANGE REQUESTS --- */}
+      {pwdRequests.length > 0 && (
+        <div className="bg-amber-50 p-6 rounded-lg border border-amber-200 space-y-3">
+          <h3 className="text-sm font-bold text-amber-800 uppercase tracking-wide">
+            Password Change Requests ({pwdRequests.length})
+          </h3>
+          <p className="text-xs text-amber-800">
+            Set a new password, then give it to the user yourself (they are not emailed).
+          </p>
+          {pwdRequests.map(req => (
+            <div key={req.id} className="bg-white border border-gray-200 rounded-lg p-3 flex flex-col md:flex-row md:items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-gray-900 truncate">
+                  {req.full_name || req.email} {req.role && <span className="text-xs font-normal text-gray-500 capitalize">· {req.role}</span>}
+                </p>
+                <p className="text-xs text-gray-500 truncate">{req.email} · {new Date(req.created_at).toLocaleString()}</p>
+                {req.note && <p className="text-xs text-gray-700 mt-1 break-words">“{req.note}”</p>}
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={requestPwd[req.id] || ''}
+                  onChange={e => setRequestPwd(prev => ({ ...prev, [req.id]: e.target.value }))}
+                  placeholder="New password (8+)"
+                  autoComplete="new-password"
+                  className="border border-gray-300 rounded p-1.5 text-xs bg-white w-44 outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={handlingRequest === req.id}
+                  onClick={() => handlePasswordRequest(req.id, 'set')}
+                  className="bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-50"
+                >
+                  Set Password
+                </button>
+                <button
+                  type="button"
+                  disabled={handlingRequest === req.id}
+                  onClick={() => handlePasswordRequest(req.id, 'dismiss')}
+                  className="text-xs text-gray-500 hover:text-gray-900 px-2 py-1.5 disabled:opacity-50"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* --- CREATE USER FORM --- */}
       <form onSubmit={handleCreateUser} className="bg-white p-6 rounded-lg shadow-sm border space-y-4">

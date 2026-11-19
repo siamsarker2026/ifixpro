@@ -26,13 +26,6 @@ const settingsModules = [
     iconBg: "bg-red-100 text-red-600",
   },
   {
-    title: "Repair Request Lists",
-    description: "View and manage submitted requests",
-    href: "/dashboard/settings/requests",
-    icon: FileText,
-    iconBg: "bg-blue-100 text-blue-600",
-  },
-  {
     title: "Daily Target",
     description: "Configure work hours and targets",
     href: "/dashboard/settings/targets",
