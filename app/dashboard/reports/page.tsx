@@ -1,3 +1,7 @@
+"use client";
+
+import { useAllowedModules } from "@/hooks/useAllowedModules";
+import { moduleForPath } from "@/lib/modules";
 import Link from "next/link";
 import { 
   Users, 
@@ -31,6 +35,13 @@ const reportsModules = [
 ];
 
 export default function ReportsPage() {
+  const { canAccess, loading } = useAllowedModules();
+  const visible = reportsModules.filter((item) => {
+    const mod = moduleForPath(item.href);
+    return mod === null || canAccess(mod);
+  });
+  if (loading) return <div className="p-8 text-sm text-gray-500">Loading...</div>;
+
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6">
       <div>
@@ -41,7 +52,7 @@ export default function ReportsPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {reportsModules.map((item) => {
+        {visible.map((item) => {
           const Icon = item.icon;
           return (
             <Link

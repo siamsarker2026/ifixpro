@@ -4,11 +4,57 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { useAllowedModules } from '@/hooks/useAllowedModules'
+import { moduleForPath } from '@/lib/modules'
+
+type NavItem = { href: string; module: string; label: React.ReactNode }
+type NavSection = { title: string; items: NavItem[] }
+
+const linkClass = 'block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300'
+
+const NAV: NavSection[] = [
+  {
+    title: 'Inventory & Boxes',
+    items: [
+      { href: '/dashboard/box-builder', module: 'box-builder', label: <><span>📦</span> Box Builder</> },
+      { href: '/dashboard/parts', module: 'parts', label: <><span>🔩</span> Parts Inventory</> },
+    ],
+  },
+  {
+    title: 'Repair',
+    items: [
+      { href: '/dashboard/repair-request', module: 'repair-request', label: 'Repair Request' },
+      { href: '/dashboard/repair-receive', module: 'repair-receive', label: 'Repair Receive' },
+      { href: '/dashboard/trace-history', module: 'trace-history', label: 'Trace Repair History' },
+      { href: '/dashboard/stock-master', module: 'stock-master', label: 'Stock Master' },
+    ],
+  },
+  {
+    title: 'Reports',
+    items: [
+      { href: '/dashboard/reports/efficiency', module: 'reports/efficiency', label: 'Daily Work Efficiency' },
+      { href: '/dashboard/reports/diagnostics-report', module: 'reports/diagnostics-report', label: 'Diagnostics Report' },
+      { href: '/dashboard/reports/damage-parts', module: 'reports/damage-parts', label: '🧯 Damage Parts' },
+    ],
+  },
+  {
+    title: 'Settings',
+    items: [
+      { href: '/dashboard/settings/technicians', module: 'settings/technicians', label: 'Technicians / Vendors' },
+      { href: '/dashboard/settings/services', module: 'settings/services', label: 'Services' },
+      { href: '/dashboard/settings/requests', module: 'settings/requests', label: 'Repair Request Lists' },
+      { href: '/dashboard/settings/targets', module: 'settings/targets', label: 'Daily Target' },
+    ],
+  },
+]
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
   const isHome = pathname === '/dashboard'
+  const { canAccess, loading: accessLoading } = useAllowedModules()
+  const pageModule = moduleForPath(pathname)
+  const pageAllowed = pageModule === null || canAccess(pageModule)
 
   const [userName, setUserName] = useState('Loading...')
   const [userEmail, setUserEmail] = useState('')
@@ -21,7 +67,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         const { data: profile } = await supabase
           .from('profiles')
           .select('full_name')
-          .eq('uuid', user.id)
+          .eq('id', user.id)
           .single()
 
         if (profile?.full_name) {
@@ -68,31 +114,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           )}
         </div>
 
-        {/* Existing Sidebar Links / Menu */}
+        {/* Sidebar links: only modules this user's role may open */}
         <div className="flex-1 overflow-y-auto p-4 space-y-1 text-sm">
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-3">Inventory & Boxes</div>
-          <Link href="/dashboard/box-builder" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300 font-medium flex items-center gap-2">
-            <span>📦</span> Box Builder
-          </Link>
-          <Link href="/dashboard/parts" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300 font-medium flex items-center gap-2"><span>🔩</span> Parts Inventory</Link>
-
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mt-6 mb-2 px-3">Repair</div>
-          <Link href="/dashboard/repair-request" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Repair Request</Link>
-          <Link href="/dashboard/repair-receive" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Repair Receive</Link>
-          <Link href="/dashboard/trace-history" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Trace Repair History</Link>
-          <Link href="/dashboard/stock-master" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Stock Master</Link>
-
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mt-6 mb-2 px-3">Reports</div>
-          <Link href="/dashboard/reports/efficiency" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Daily Work Efficiency</Link>
-          <Link href="/dashboard/reports/diagnostics-report" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Diagnostics Report</Link>
-          <Link href="/dashboard/reports/damage-parts" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">🧯 Damage Parts</Link>
-
-
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mt-6 mb-2 px-3">Settings</div>
-          <Link href="/dashboard/settings/technicians" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Technicians / Vendors</Link>
-          <Link href="/dashboard/settings/services" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Services</Link>
-          <Link href="/dashboard/settings/requests" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Repair Request Lists</Link>
-          <Link href="/dashboard/settings/targets" className="block py-2 px-3 rounded-lg hover:bg-slate-800 text-slate-300">Daily Target</Link>
+          {!accessLoading && NAV.map((section, i) => {
+            const items = section.items.filter(item => canAccess(item.module))
+            if (items.length === 0) return null
+            return (
+              <div key={section.title}>
+                <div className={`text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 px-3 ${i > 0 ? 'mt-6' : ''}`}>
+                  {section.title}
+                </div>
+                {items.map(item => (
+                  <Link key={item.href} href={item.href} className={`${linkClass} font-medium flex items-center gap-2`}>
+                    {item.label}
+                  </Link>
+                ))}
+              </div>
+            )
+          })}
         </div>
 
         {/* User Profile Footer Widget & Logout */}
@@ -118,7 +157,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto p-8">
-        {children}
+        {accessLoading ? (
+          <div className="text-sm text-gray-500">Checking permissions...</div>
+        ) : pageAllowed ? (
+          children
+        ) : (
+          <div className="p-6 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm font-semibold max-w-2xl mx-auto mt-8">
+            Access Denied: your role does not have access to this page. Please contact an administrator.
+          </div>
+        )}
       </main>
     </div>
   )

@@ -1,58 +1,41 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { canAccessModule } from '@/lib/modules'
 
+// Role and allowed modules come from /api/me/access, which reads them on the
+// server. Reading them straight from Supabase in the browser failed for users
+// whose profile row the row-level-security policies hide.
 export function useAllowedModules() {
   const [role, setRole] = useState<string | null>(null)
   const [allowedModules, setAllowedModules] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let cancelled = false
     async function loadPermissions() {
-      // 1. Get logged-in user
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) {
-        setLoading(false)
-        return
+      try {
+        const res = await fetch('/api/me/access', { cache: 'no-store' })
+        if (res.ok) {
+          const data = await res.json()
+          if (!cancelled) {
+            setRole(data.role ?? null)
+            setAllowedModules(Array.isArray(data.modules) ? data.modules : [])
+          }
+        }
+      } catch {
+        // Leave access empty: nothing is shown rather than everything
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-
-      // 2. Fetch user's role from profiles
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single()
-
-      const userRole = profile?.role || 'user'
-      setRole(userRole)
-
-      // 3. Admin gets access to everything
-      if (userRole === 'admin') {
-        setAllowedModules(['*'])
-        setLoading(false)
-        return
-      }
-
-      // 4. Fetch permissions for user's role
-      const { data: perms } = await supabase
-        .from('role_permissions')
-        .select('module_id')
-        .eq('role', userRole)
-
-      if (perms) {
-        setAllowedModules(perms.map(p => p.module_id))
-      }
-      setLoading(false)
     }
-
     loadPermissions()
+    return () => { cancelled = true }
   }, [])
 
   function canAccess(moduleId: string) {
-    if (role === 'admin' || allowedModules.includes('*')) return true
-    // Matches top-level module or category (e.g., 'reports' matches 'reports/diagnostics-report')
-    return allowedModules.some(m => m === moduleId || m.startsWith(`${moduleId}/`))
+    if (role === 'admin') return true
+    return canAccessModule(allowedModules, moduleId)
   }
 
   return { role, allowedModules, canAccess, loading }

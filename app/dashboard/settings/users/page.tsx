@@ -117,7 +117,15 @@ export default function UsersManagementPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'update', userId, role: newRole, isActive: newIsActive }),
     })
-    if (res.ok) fetchUsers()
+    setErrorMsg('')
+    setSuccessMsg('')
+    if (res.ok) {
+      setSuccessMsg('User updated successfully!')
+    } else {
+      const data = await res.json().catch(() => ({}))
+      setErrorMsg(data.error || 'Failed to update user')
+    }
+    fetchUsers()
   }
 
   async function handleResetPassword(userId: string) {
@@ -127,10 +135,15 @@ export default function UsersManagementPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'update', userId, password: newPassword }),
     })
+    setErrorMsg('')
+    setSuccessMsg('')
     if (res.ok) {
       setSuccessMsg('Password updated successfully!')
       setResetPwdUserId(null)
       setNewPassword('')
+    } else {
+      const data = await res.json().catch(() => ({}))
+      setErrorMsg(data.error || 'Failed to update password')
     }
   }
 
