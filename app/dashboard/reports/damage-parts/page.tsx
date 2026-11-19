@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, Fragment } from 'react'
 import { supabase } from '@/lib/supabase'
 import { playSuccess, playError } from '@/lib/sounds'
+import { fetchUserNames } from '@/lib/userNames'
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -47,6 +48,8 @@ const inputCls = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-
 const OTHER = '__other'
 // Only LCD Damage has two prices (charged price + our cost). Other parts have one price.
 const hasCost = (p: any) => (p?.has_cost ?? /lcd/i.test(p?.name || '')) === true
+// Our cost per piece: the specific cost if one was set, otherwise the normal (unit) price.
+const costOf = (r: any) => (Number(r?.cost_price) > 0 ? Number(r.cost_price) : Number(r?.unit_price) || 0)
 
 export default function DamagePartsPage() {
   const [tab, setTab] = useState<Tab>('entries')
@@ -60,6 +63,7 @@ export default function DamagePartsPage() {
   const [people, setPeople] = useState<any[]>([])
   const [prices, setPrices] = useState<any[]>([])
   const [records, setRecords] = useState<any[]>([])
+  const [enteredBy, setEnteredBy] = useState<Map<string, string>>(new Map())
 
   // Entry form
   const [fDate, setFDate] = useState(todayDubai())
@@ -130,7 +134,10 @@ export default function DamagePartsPage() {
         .order('damage_date', { ascending: false }).order('id').range(from, to)
     )
     if (error) setMsg({ type: 'error', text: error.message })
-    else setRecords(data)
+    else {
+      setRecords(data)
+      fetchUserNames(data.map(r => r.created_by)).then(setEnteredBy)
+    }
     setLoadingRecords(false)
   }, [])
 
@@ -153,12 +160,13 @@ export default function DamagePartsPage() {
 
   const selectedPerson = people.find(p => p.id === fPerson)
 
-  // Models offered in the entry form: those priced for the chosen part
+  // Models offered in the entry form: every model in the Price List, whatever
+  // the part. A model with no price for the chosen part asks for the price.
   const modelOptions = useMemo(() => {
-    const forPart = prices.filter(p => p.part_type_id === fPart).map(p => p.model as string)
-    const list = forPart.length > 0 ? forPart : prices.map(p => p.model as string)
-    return Array.from(new Set<string>(list)).sort(modelSort)
-  }, [prices, fPart])
+    const byKey = new Map<string, string>()
+    prices.forEach(p => { const k = norm(p.model); if (!byKey.has(k)) byKey.set(k, p.model as string) })
+    return Array.from(byKey.values()).sort(modelSort)
+  }, [prices])
 
   const effectiveModel = (fModel === OTHER ? fModelOther : fModel).trim()
   const noListedPrice = !!effectiveModel && !!fPart && !priceMap.get(`${fPart}|${norm(effectiveModel)}`)
@@ -173,7 +181,7 @@ export default function DamagePartsPage() {
     if (!fPart || !effectiveModel) { setFUnit(''); setFCost(''); return }
     const p = priceMap.get(`${fPart}|${norm(effectiveModel)}`)
     setFUnit(p ? String(Number(p.unit_price)) : '')
-    setFCost(p ? String(Number(p.cost_price)) : '')
+    setFCost(p && Number(p.cost_price) > 0 ? String(Number(p.cost_price)) : '')
   }, [fPart, effectiveModel, priceMap])
 
   async function addPerson() {
@@ -196,7 +204,7 @@ export default function DamagePartsPage() {
     if (saving) return
     const qty = Number(fQty)
     const unit = num(fUnit)
-    const cost = fCost.trim() === '' ? 0 : Number(fCost)
+    const cost = fCost.trim() === '' ? unit : Number(fCost) // no specific cost: use the normal price
     const imei = fImei.trim()
 
     if (!selectedPerson || !fPart || !effectiveModel) return setMsg({ type: 'error', text: 'Choose the person, damage part and model.' })
@@ -241,13 +249,13 @@ export default function DamagePartsPage() {
     return records.filter(r => {
       if (eDept !== 'ALL' && r.department_id !== eDept) return false
       if (!q) return true
-      return [personName.get(r.person_id), partName.get(r.part_type_id), r.model, r.imei, r.remark]
+      return [personName.get(r.person_id), partName.get(r.part_type_id), r.model, r.imei, r.remark, enteredBy.get(r.created_by)]
         .some(v => norm(v).includes(q))
     })
-  }, [records, eDept, eSearch, personName, partName])
+  }, [records, eDept, eSearch, personName, partName, enteredBy])
 
   const listTotals = useMemo(() => listRecords.reduce(
-    (a, r) => ({ qty: a.qty + r.qty, amt: a.amt + r.qty * Number(r.unit_price), cost: a.cost + r.qty * Number(r.cost_price) }),
+    (a, r) => ({ qty: a.qty + r.qty, amt: a.amt + r.qty * Number(r.unit_price), cost: a.cost + r.qty * costOf(r) }),
     { qty: 0, amt: 0, cost: 0 }
   ), [listRecords])
 
@@ -257,7 +265,7 @@ export default function DamagePartsPage() {
     const models = Array.from(new Set<string>(rows.map(r => r.model as string))).sort(modelSort)
     type Cell = { qty: number; amt: number; cost: number }
     const empty = (): Cell => ({ qty: 0, amt: 0, cost: 0 })
-    const add = (c: Cell, r: any) => { c.qty += r.qty; c.amt += r.qty * Number(r.unit_price); c.cost += r.qty * Number(r.cost_price) }
+    const add = (c: Cell, r: any) => { c.qty += r.qty; c.amt += r.qty * Number(r.unit_price); c.cost += r.qty * costOf(r) }
 
     const groups = parts
       .map(part => {
@@ -406,9 +414,11 @@ export default function DamagePartsPage() {
       IMEI: r.imei || '',
       'Unit price': Number(r.unit_price),
       'Total charged': r.qty * Number(r.unit_price),
-      'Cost each': Number(r.cost_price),
-      'Total cost': r.qty * Number(r.cost_price),
-      Remark: r.remark || ''
+      'Cost each': costOf(r),
+      'Total cost': r.qty * costOf(r),
+      Remark: r.remark || '',
+      'Entered by': enteredBy.get(r.created_by) || '',
+      'Entered at': r.created_at ? new Date(r.created_at).toLocaleString() : ''
     }))
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), `Damage_${month}`)
@@ -427,7 +437,7 @@ export default function DamagePartsPage() {
     doc.setFontSize(10)
     doc.text(`Month: ${month}   |   ${deptLabel}`, 14, 22)
     doc.text(
-      `Pieces: ${pivot.grand.qty}   |   Total charged: ${money(pivot.grand.amt)} AED` + (pdfCost ? `   |   Our cost (LCD): ${money(pivot.grand.cost)} AED` : ''),
+      `Pieces: ${pivot.grand.qty}   |   Total charged: ${money(pivot.grand.amt)} AED` + (pdfCost ? `   |   Our cost: ${money(pivot.grand.cost)} AED` : ''),
       14, 28
     )
 
@@ -666,7 +676,7 @@ export default function DamagePartsPage() {
                 {hasCost(parts.find(x => x.id === fPart)) && (
                   <div>
                     <label className="block text-gray-500 text-xs mb-1">Our cost each (optional)</label>
-                    <input type="number" min={0} step="0.01" value={fCost} onChange={e => setFCost(e.target.value)} className={inputCls} />
+                    <input type="number" min={0} step="0.01" value={fCost} onChange={e => setFCost(e.target.value)} placeholder={fUnit ? `${fUnit} (same as price)` : ''} className={inputCls} />
                   </div>
                 )}
                 {noListedPrice && <p className="col-span-2 self-end pb-2 text-xs text-amber-700">No price in the Price List for this model. Enter it here, or add it in the Price List tab.</p>}
@@ -713,7 +723,7 @@ export default function DamagePartsPage() {
                       <th className="p-3">Date</th><th className="p-3">Department</th><th className="p-3">Person</th>
                       <th className="p-3">Damage part</th><th className="p-3">Model</th><th className="p-3 text-center">Qty</th>
                       <th className="p-3">IMEI</th><th className="p-3 text-right">Unit</th><th className="p-3 text-right">Total</th>
-                      <th className="p-3 text-right">Our cost</th><th className="p-3">Remark</th><th className="p-3"></th>
+                      <th className="p-3 text-right">Our cost</th><th className="p-3">Remark</th><th className="p-3">Entered by</th><th className="p-3"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -728,8 +738,9 @@ export default function DamagePartsPage() {
                         <td className="p-3 font-mono text-gray-500">{r.imei || '—'}</td>
                         <td className="p-3 text-right font-mono">{money(Number(r.unit_price))}</td>
                         <td className="p-3 text-right font-mono font-bold">{money(r.qty * Number(r.unit_price))}</td>
-                        <td className="p-3 text-right font-mono text-gray-600">{Number(r.cost_price) ? money(r.qty * Number(r.cost_price)) : '—'}</td>
+                        <td className="p-3 text-right font-mono text-gray-600">{money(r.qty * costOf(r))}</td>
                         <td className="p-3 max-w-[200px] truncate" title={r.remark || ''}>{r.remark || ''}</td>
+                        <td className="p-3 text-gray-600" title={r.created_at ? new Date(r.created_at).toLocaleString() : ''}>{enteredBy.get(r.created_by) || '—'}</td>
                         <td className="p-3 text-right">
                           <button onClick={() => deleteRecord(r)} className="text-red-600 font-medium hover:underline cursor-pointer">Delete</button>
                         </td>
@@ -743,7 +754,7 @@ export default function DamagePartsPage() {
                       <td className="p-3"></td><td className="p-3"></td>
                       <td className="p-3 text-right font-mono">{money(listTotals.amt)}</td>
                       <td className="p-3 text-right font-mono">{money(listTotals.cost)}</td>
-                      <td className="p-3" colSpan={2}></td>
+                      <td className="p-3" colSpan={3}></td>
                     </tr>
                   </tfoot>
                 </table>
@@ -777,7 +788,7 @@ export default function DamagePartsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="bg-white p-4 rounded-lg shadow-sm border"><p className="text-xs text-gray-500">Pieces damaged</p><p className="text-2xl font-bold text-slate-900">{pivot.grand.qty}</p></div>
             <div className="bg-white p-4 rounded-lg shadow-sm border"><p className="text-xs text-gray-500">Total charged (AED)</p><p className="text-2xl font-bold text-slate-900">{money(pivot.grand.amt)}</p></div>
-            <div className="bg-white p-4 rounded-lg shadow-sm border"><p className="text-xs text-gray-500">Our cost, LCD (AED)</p><p className="text-2xl font-bold text-slate-900">{money(pivot.grand.cost)}</p></div>
+            <div className="bg-white p-4 rounded-lg shadow-sm border"><p className="text-xs text-gray-500">Our cost (AED)</p><p className="text-2xl font-bold text-slate-900">{money(pivot.grand.cost)}</p></div>
           </div>
 
           {pivot.groups.length === 0 ? (
@@ -848,7 +859,7 @@ export default function DamagePartsPage() {
                     </tfoot>
                   </table>
                 </div>
-                <p className="p-3 text-[11px] text-gray-500 border-t">Each cell: pieces, then the amount charged (AED). LCD totals also show our cost in grey.</p>
+                <p className="p-3 text-[11px] text-gray-500 border-t">Each cell: pieces, then the amount charged (AED). Totals also show our cost in grey when it differs from the amount charged.</p>
               </div>
             </>
           )}
@@ -862,7 +873,7 @@ export default function DamagePartsPage() {
             <div className="p-4 border-b flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="font-bold text-gray-900 text-sm">Price List (AED)</h3>
-                <p className="text-xs text-gray-500 mt-0.5">Unit = price charged to the person. Cost (LCD only) = our cost. Saved when you leave the box. Changing a price does not change old entries.</p>
+                <p className="text-xs text-gray-500 mt-0.5">Unit = price charged to the person. Cost (LCD only) = our cost; left empty, our cost is the unit price. Saved when you leave the box. Changing a price does not change old entries.</p>
               </div>
               <div className="flex items-center gap-2 text-xs">
                 <input value={newModel} onChange={e => setNewModel(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addModelRow() }} placeholder="New model, e.g. 16 pro max" className="border rounded-lg px-3 py-2 w-48" />
@@ -982,7 +993,7 @@ function CellBox({ c, bold, showCost }: { c?: { qty: number; amt: number; cost: 
     <td className="p-2 text-center whitespace-nowrap">
       <div className={`font-mono ${bold ? 'font-bold' : 'font-semibold'} text-slate-900`}>{c.qty}</div>
       <div className="font-mono text-[11px] text-slate-600">{money(c.amt)}</div>
-      {showCost && c.cost > 0 && <div className="font-mono text-[10px] text-gray-400">cost {money(c.cost)}</div>}
+      {showCost && c.cost > 0 && Math.abs(c.cost - c.amt) > 0.005 && <div className="font-mono text-[10px] text-gray-400">cost {money(c.cost)}</div>}
     </td>
   )
 }
@@ -1003,7 +1014,7 @@ function FragmentGroup({ g, models }: { g: any; models: string[] }) {
       <tr className="bg-slate-50 border-b-2 border-slate-300 font-bold">
         <td className="p-2 px-3 sticky left-0 bg-slate-50 text-slate-900">{g.part.name} Total</td>
         {models.map(m => <CellBox key={m} c={g.cells.get(m)} bold />)}
-        <CellBox c={g.total} bold showCost={hasCost(g.part)} />
+        <CellBox c={g.total} bold showCost />
       </tr>
     </>
   )

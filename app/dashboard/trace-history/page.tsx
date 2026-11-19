@@ -3,11 +3,13 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
+import { fetchUserNames } from '@/lib/userNames'
 
 export default function TraceRepairHistoryPage() {
   const [imeiInput, setImeiInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [historyItems, setHistoryItems] = useState<any[]>([])
+  const [damageItems, setDamageItems] = useState<any[]>([])
   const [errorMsg, setErrorMsg] = useState('')
   const [servicesMap, setServicesMap] = useState<Map<string, string>>(new Map())
 
@@ -29,6 +31,8 @@ export default function TraceRepairHistoryPage() {
     setLoading(true)
     setErrorMsg('')
     setHistoryItems([])
+    setDamageItems([])
+    const imei = imeiInput.trim()
 
     const { data: { user } } = await supabase.auth.getUser()
     const activeUserName = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'supportlab1'
@@ -44,20 +48,34 @@ export default function TraceRepairHistoryPage() {
     }
 
     // Explicit foreign key constraint specified here to fix the multiple relationship error
-    const { data, error } = await supabase
-      .from('repair_request_items')
-      .select(`
-        *,
-        technicians_vendors!repair_request_items_technician_id_fkey (name, type),
-        repair_requests (reference_number, status, created_at, user_id)
-      `)
-      .eq('imei', imeiInput.trim())
-      .order('created_at', { ascending: false })
+    const [{ data, error }, damage] = await Promise.all([
+      supabase
+        .from('repair_request_items')
+        .select(`
+          *,
+          technicians_vendors!repair_request_items_technician_id_fkey (name, type),
+          repair_requests (reference_number, status, created_at, user_id)
+        `)
+        .eq('imei', imei)
+        .order('created_at', { ascending: false }),
+      // Damage Parts entries for this device (who damaged what, when)
+      supabase
+        .from('damage_records')
+        .select('*, damage_people (name), damage_part_types (name), damage_departments (name)')
+        .eq('imei', imei)
+        .order('damage_date', { ascending: false })
+    ])
+
+    const damageRows = damage.data || []
+    if (damageRows.length > 0) {
+      const names = await fetchUserNames(damageRows.map(d => d.created_by))
+      setDamageItems(damageRows.map(d => ({ ...d, entered_by: names.get(d.created_by) || '—' })))
+    }
 
     if (error) {
       setErrorMsg(error.message)
     } else if (!data || data.length === 0) {
-      setErrorMsg('No history found for this IMEI.')
+      if (damageRows.length === 0) setErrorMsg('No history found for this IMEI.')
     } else {
       const processed = data.map((item) => {
         const rawAssigned = item.assigned_by || item.repair_requests?.user_id || item.user_id
@@ -86,6 +104,14 @@ export default function TraceRepairHistoryPage() {
   }
 
   const latestItem = historyItems.length > 0 ? historyItems[0] : null
+  const latestDamage = damageItems[0] || null
+  const hasResults = historyItems.length > 0 || damageItems.length > 0
+
+  // Repairs and damage entries in one list, newest first
+  const timeline = [
+    ...historyItems.map(item => ({ kind: 'repair' as const, at: item.created_at || '', item })),
+    ...damageItems.map(item => ({ kind: 'damage' as const, at: item.created_at || item.damage_date || '', item }))
+  ].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -129,6 +155,26 @@ export default function TraceRepairHistoryPage() {
       </div>
 
       {/* Device Information — Shown Once */}
+      {!latestItem && latestDamage && (
+        <div className="bg-slate-50 border border-slate-200 p-6 rounded-lg shadow-sm space-y-3">
+          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Device Information</h3>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-xs">
+            <div>
+              <span className="text-gray-500 block">IMEI</span>
+              <span className="font-mono font-bold text-gray-900 text-sm">{latestDamage.imei}</span>
+            </div>
+            <div>
+              <span className="text-gray-500 block">Model</span>
+              <span className="font-medium text-gray-900 text-sm">{latestDamage.model || '—'}</span>
+            </div>
+            <div className="col-span-2 md:col-span-3">
+              <span className="text-gray-500 block">Repair history</span>
+              <span className="font-medium text-gray-900 text-sm">No repair requests, only damage entries</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {latestItem && (
         <div className="bg-slate-50 border border-slate-200 p-6 rounded-lg shadow-sm space-y-3">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Device Information</h3>
@@ -160,10 +206,10 @@ export default function TraceRepairHistoryPage() {
       )}
 
       {/* Repair History Table */}
-      {historyItems.length > 0 && (
+      {hasResults && (
         <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
           <div className="p-4 border-b bg-gray-50 font-semibold text-sm text-gray-900">
-            Repair History Logs ({historyItems.length})
+            Repair History Logs ({historyItems.length}){damageItems.length > 0 && <span className="text-red-700"> · Damage entries ({damageItems.length})</span>}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs whitespace-nowrap">
@@ -182,7 +228,33 @@ export default function TraceRepairHistoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {historyItems.map((item) => {
+                {timeline.map(({ kind, item }) => {
+                  if (kind === 'damage') {
+                    const person = item.damage_people?.name || 'Unknown'
+                    const part = item.damage_part_types?.name || 'a part'
+                    return (
+                      <tr key={`damage-${item.id}`} className="bg-red-50/60 hover:bg-red-50">
+                        <td className="p-3 font-mono font-bold text-red-700">DAMAGE</td>
+                        <td className="p-3 text-gray-800">
+                          {person}
+                          {item.damage_departments?.name && <span className="text-gray-500"> · {item.damage_departments.name}</span>}
+                        </td>
+                        <td className="p-3 text-gray-800">
+                          <span className="font-semibold">{person}</span> damaged <span className="font-semibold">{part}</span>
+                          {item.qty > 1 ? ` ×${item.qty}` : ''} ({item.model}) on <span className="font-mono">{item.damage_date}</span>
+                        </td>
+                        <td className="p-3 text-gray-800">{item.remark || '—'}</td>
+                        <td className="p-3">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800">Damaged</span>
+                        </td>
+                        <td className="p-3 text-gray-400">—</td>
+                        <td className="p-3 font-medium text-gray-900">{item.entered_by}</td>
+                        <td className="p-3 text-gray-600">{item.created_at ? new Date(item.created_at).toLocaleString() : item.damage_date}</td>
+                        <td className="p-3 text-gray-400">—</td>
+                        <td className="p-3 text-gray-400">—</td>
+                      </tr>
+                    )
+                  }
                   const actionUser = item.resolved_received_by
                   const actionTime = item.received_at ? new Date(item.received_at).toLocaleString() : '—'
 
