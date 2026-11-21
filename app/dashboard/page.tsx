@@ -16,13 +16,14 @@ export default function DashboardHome() {
   const { canAccess, loading } = useAllowedModules()
 
   const menuItems = [
-    { 
-      id: 'box-builder',
-      name: 'Box Builder', 
-      desc: 'Scan devices into boxes, manage grades, and print labels', 
-      href: '/dashboard/box-builder', 
-      icon: <Box className="w-6 h-6 text-cyan-600" />, 
-      color: 'bg-cyan-50' 
+    {
+      // Hub for Box Builder and Parts Inventory: shown if either is granted
+      id: ['box-builder', 'parts'],
+      name: 'Inventory & Boxes',
+      desc: 'Box Builder and Parts Inventory',
+      href: '/dashboard/inventory',
+      icon: <Box className="w-6 h-6 text-cyan-600" />,
+      color: 'bg-cyan-50'
     },
     { 
       id: 'repair-request',
@@ -79,7 +80,9 @@ export default function DashboardHome() {
   }
 
   // Filter items based on user's assigned role permissions
-  const visibleItems = menuItems.filter(item => canAccess(item.id))
+  const visibleItems = menuItems.filter(item =>
+    Array.isArray(item.id) ? item.id.some(id => canAccess(id)) : canAccess(item.id)
+  )
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">

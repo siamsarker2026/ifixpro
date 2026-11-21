@@ -31,12 +31,13 @@ const ROUTE_MODULES: [string, string][] = [
   ['/dashboard/settings', 'settings'],
 ]
 
-// null = page open to every signed-in user (the dashboard home).
+// null = page open to every signed-in user (the dashboard home, My Account,
+// and hubs like Inventory & Boxes that list only the cards a role may open).
 // Unknown pages under /dashboard map to a module nobody has, so only admins
 // see them until they are added here.
 export function moduleForPath(pathname: string): string | null {
   const path = pathname.replace(/\/+$/, '') || '/'
-  if (path === '/dashboard' || path === '/dashboard/account' || path.startsWith('/dashboard/account/')) return null
+  if (path === '/dashboard' || path === '/dashboard/inventory' || path === '/dashboard/account' || path.startsWith('/dashboard/account/')) return null
   let best: [string, string] | undefined
   for (const entry of ROUTE_MODULES) {
     const [prefix] = entry

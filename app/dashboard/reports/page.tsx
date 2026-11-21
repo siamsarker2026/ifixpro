@@ -3,9 +3,9 @@
 import { useAllowedModules } from "@/hooks/useAllowedModules";
 import { moduleForPath } from "@/lib/modules";
 import Link from "next/link";
+import CrackedScreenIcon from "@/components/CrackedScreenIcon";
 import { 
   Users, 
-  Wrench, 
   FileText, 
   TrendingUp,
   ClipboardList
@@ -30,7 +30,7 @@ const reportsModules = [
     title: "Damage Parts",
     description: "Track and manage damaged parts",
     href: "/dashboard/reports/damage-parts",
-    icon: Wrench,
+    icon: CrackedScreenIcon,
     iconBg: "bg-red-100 text-red-600",
   },
   {

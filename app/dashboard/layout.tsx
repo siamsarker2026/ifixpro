@@ -6,6 +6,7 @@ import { useRouter, usePathname } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { useAllowedModules } from '@/hooks/useAllowedModules'
 import { moduleForPath } from '@/lib/modules'
+import CrackedScreenIcon from '@/components/CrackedScreenIcon'
 
 // module: null = every signed-in user sees it
 type NavItem = { href: string; module: string | null; label: React.ReactNode }
@@ -18,7 +19,7 @@ const NAV: NavSection[] = [
     title: 'Inventory & Boxes',
     items: [
       { href: '/dashboard/box-builder', module: 'box-builder', label: <><span>📦</span> Box Builder</> },
-      { href: '/dashboard/parts', module: 'parts', label: <><span>🔩</span> Parts Inventory</> },
+      { href: '/dashboard/parts', module: 'parts', label: <><span>⚙️</span> Parts Inventory</> },
     ],
   },
   {
@@ -35,7 +36,7 @@ const NAV: NavSection[] = [
     items: [
       { href: '/dashboard/reports/efficiency', module: 'reports/efficiency', label: 'Daily Work Efficiency' },
       { href: '/dashboard/reports/diagnostics-report', module: 'reports/diagnostics-report', label: 'Diagnostics Report' },
-      { href: '/dashboard/reports/damage-parts', module: 'reports/damage-parts', label: '🧯 Damage Parts' },
+      { href: '/dashboard/reports/damage-parts', module: 'reports/damage-parts', label: <><CrackedScreenIcon className="w-4 h-4 text-red-400 shrink-0" /> Damage Parts</> },
       { href: '/dashboard/reports/requests', module: 'reports/requests', label: 'Repair Request Lists' },
     ],
   },
