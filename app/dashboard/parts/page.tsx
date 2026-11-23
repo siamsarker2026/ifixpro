@@ -50,9 +50,13 @@ export default function PartsInventoryPage() {
   const [search, setSearch] = useState('')
   const [catFilter, setCatFilter] = useState('All')
   const [selected, setSelected] = useState<{ modelId: string; typeId: string } | null>(null)
-  const [showAdd, setShowAdd] = useState<'model' | 'type' | null>(null)
+  const [showAdd, setShowAdd] = useState<'model' | 'type' | 'rename' | null>(null)
   const [addName, setAddName] = useState('')
   const [addCategory, setAddCategory] = useState('')
+  // Rename a part type ("t|<id>")
+  const [renameTarget, setRenameTarget] = useState('')
+  const [renameName, setRenameName] = useState('')
+  const [renameCategory, setRenameCategory] = useState('')
 
   // Purchase form
   const [pModel, setPModel] = useState('')
@@ -309,6 +313,31 @@ export default function PartsInventoryPage() {
     setAddName(''); setAddCategory(''); setShowAdd(null)
   }
 
+  function pickRename(target: string) {
+    setRenameTarget(target)
+    const [kind, id] = target.split('|')
+    if (kind === 't') { const t = types.find(x => x.id === id); setRenameName(t?.name || ''); setRenameCategory(t?.category || '') }
+    else { setRenameName(''); setRenameCategory('') }
+  }
+
+  async function handleRename(e: React.FormEvent) {
+    e.preventDefault()
+    const [kind, id] = renameTarget.split('|')
+    const name = renameName.trim()
+    if (!id || !name) return
+    setBusy(true)
+    if (kind === 't') {
+      const old = types.find(t => t.id === id)
+      const category = renameCategory.trim() || old?.category || 'Other'
+      const { error } = await supabase.from('parts_types').update({ name, category }).eq('id', id)
+      setBusy(false)
+      if (error) { flash(error.code === '23505' ? 'A part with that name already exists.' : error.message, 'error'); return }
+      setTypes(prev => prev.map(t => (t.id === id ? { ...t, name, category } : t)))
+      flash(`Part "${old?.name}" renamed to "${name}".`)
+    }
+    setRenameTarget(''); setRenameName(''); setRenameCategory(''); setShowAdd(null)
+  }
+
   function goPurchase(modelId: string, typeId: string) {
     setPModel(modelId); setPType(typeId)
     setSelected(null)
@@ -393,8 +422,8 @@ export default function PartsInventoryPage() {
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search model..."
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-52 outline-none focus:ring-2 focus:ring-slate-900"
+              placeholder="Search model or part name..."
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-64 outline-none focus:ring-2 focus:ring-slate-900"
             />
             <select
               value={catFilter}
@@ -411,10 +440,50 @@ export default function PartsInventoryPage() {
             <div className="ml-auto flex gap-2">
               <button onClick={() => { setShowAdd(showAdd === 'model' ? null : 'model'); setAddName('') }} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-xs cursor-pointer hover:bg-gray-50">+ Model</button>
               <button onClick={() => { setShowAdd(showAdd === 'type' ? null : 'type'); setAddName('') }} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-xs cursor-pointer hover:bg-gray-50">+ Part type</button>
+              <button onClick={() => { setShowAdd(showAdd === 'rename' ? null : 'rename'); pickRename('') }} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-xs cursor-pointer hover:bg-gray-50">✎ Edit part names</button>
             </div>
           </div>
 
-          {showAdd && (
+          {showAdd === 'rename' && (
+            <form onSubmit={handleRename} className="flex flex-wrap gap-2 p-3 bg-slate-50 border rounded-lg">
+              <select
+                autoFocus
+                value={renameTarget}
+                onChange={e => pickRename(e.target.value)}
+                className="w-56 border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-slate-900"
+              >
+                <option value="">Choose a part to rename…</option>
+                {categories.map(c => (
+                  <optgroup key={c} label={`Parts · ${c}`}>
+                    {types.filter(t => t.category === c).map(t => <option key={t.id} value={`t|${t.id}`}>{t.name}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+              <input
+                value={renameName}
+                onChange={e => setRenameName(e.target.value)}
+                disabled={!renameTarget}
+                placeholder="New name"
+                className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-900 disabled:bg-gray-100"
+              />
+              {renameTarget.startsWith('t|') && (
+                <>
+                  <input
+                    list="parts-categories-rename"
+                    value={renameCategory}
+                    onChange={e => setRenameCategory(e.target.value)}
+                    placeholder="Category"
+                    className="w-52 border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-900"
+                  />
+                  <datalist id="parts-categories-rename">{categories.map(c => <option key={c} value={c} />)}</datalist>
+                </>
+              )}
+              <button type="submit" disabled={busy || !renameTarget || !renameName.trim()} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-40 cursor-pointer">Save</button>
+              <p className="w-full text-[11px] text-gray-500">Renaming keeps all stock, purchases and history. They are linked by ID, not by name.</p>
+            </form>
+          )}
+
+          {(showAdd === 'model' || showAdd === 'type') && (
             <form onSubmit={handleAddItem} className="flex flex-wrap gap-2 p-3 bg-slate-50 border rounded-lg">
               <input
                 autoFocus
@@ -704,8 +773,37 @@ function StockGrid({ models, types, stock, search, catFilter, onSelect }: {
   models: Model[]; types: PartType[]; stock: Map<string, StockCell>
   search: string; catFilter: string; onSelect: (modelId: string, typeId: string) => void
 }) {
-  const visibleTypes = types.filter(t => catFilter === 'All' || t.category === catFilter)
-  const visibleModels = models.filter(m => m.name.toLowerCase().includes(search.trim().toLowerCase()))
+  // Search matches model names, part names, or both together:
+  //   "15 pro"      -> rows for that model, all parts
+  //   "lcd"         -> all models, only LCD columns
+  //   "15 pro lcd"  -> that model and those parts (either order works)
+  const q = search.trim().toLowerCase().replace(/\s+/g, ' ')
+  const catTypes = types.filter(t => catFilter === 'All' || t.category === catFilter)
+  const matchModels = (s: string) => models.filter(m => m.name.toLowerCase().includes(s))
+  const matchTypes = (s: string) => catTypes.filter(t => t.name.toLowerCase().includes(s) || t.category.toLowerCase().includes(s))
+
+  let visibleModels = models
+  let visibleTypes = catTypes
+  if (q) {
+    const modelHits = matchModels(q)
+    const typeHits = matchTypes(q)
+    if (modelHits.length > 0) visibleModels = modelHits
+    else if (typeHits.length > 0) visibleTypes = typeHits
+    else {
+      // Try every split into a model part and a part-name part, both orders.
+      // Prefer the longest model text, so "15 pro max lcd" means model "15 pro max".
+      const words = q.split(' ')
+      let found = false
+      for (let i = words.length - 1; i >= 1 && !found; i--) {
+        for (const [mText, tText] of [[words.slice(0, i).join(' '), words.slice(i).join(' ')], [words.slice(words.length - i).join(' '), words.slice(0, words.length - i).join(' ')]]) {
+          const ms = matchModels(mText)
+          const ts = matchTypes(tText)
+          if (ms.length > 0 && ts.length > 0) { visibleModels = ms; visibleTypes = ts; found = true; break }
+        }
+      }
+      if (!found) { visibleModels = []; visibleTypes = [] }
+    }
+  }
 
   // Category bands above the part names
   const groups: { category: string; count: number }[] = []

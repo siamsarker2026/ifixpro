@@ -18,16 +18,16 @@ interface CheckItem {
   result: 'Pass' | 'Fail' | 'N/A'
 }
 
-// Our own grouping/wording — not a copy of any third-party report's layout.
-const DEFAULT_CHECKLIST: { group: string; items: string[] }[] = [
-  { group: 'Connectivity', items: ['WiFi', 'Bluetooth', 'NFC', 'Baseband / Cellular'] },
-  { group: 'Display & Camera', items: ['LCD / Display', 'Touch Digitizer', 'Screen Brightness Sensor', 'Front Camera', 'Rear Camera', 'Ultra Wide Camera', 'Face ID'] },
-  { group: 'Audio', items: ['Earpiece', 'Loud Speaker', 'Front Mic', 'Bottom Mic', 'Rear Mic'] },
-  { group: 'Buttons & Mechanical', items: ['Power Button', 'Volume Up', 'Volume Down', 'Mute Switch', 'Vibration Motor'] },
-  { group: 'Sensors', items: ['Proximity Sensor', 'Ambient Light Sensor', 'Gyroscope', 'Accelerometer'] },
-  { group: 'Power', items: ['Battery', 'Charging / USB Port'] },
-  { group: 'Other', items: ['Flash', 'iCloud Lock Status'] }
+// Diagnostics test items, in report order. When the IMEI has a Dr.Fone test in
+// Stock Master, the list is replaced by that test's own Pass/Fail items.
+const DEFAULT_TESTS = [
+  'Proximity', 'Flip Switch', 'Bluetooth', 'Front Shaking Camera', 'Rear Mic', 'Flash', 'Face ID', 'FrontCamera',
+  'Front Mic', 'Accelerometer', 'Gyroscope', 'Loud Speaker', 'NFC', 'Ultra Wide Camera', 'Screen Rotation', 'WiFi',
+  'Dot Projector', 'LCD', 'RearCamera', 'Bottom Mic', 'USB IC', 'Digitizer', 'Volume Down Button', 'Volume Up Button',
+  'Brightness', 'Buttons', 'Infared Camera', 'Power Button', 'Earpiece', 'Device Vibration', 'Baseband', 'Battery', 'iCloud',
 ]
+const DEFAULT_PARTS = ['Battery', 'Display', 'Camera', 'Bluetooth', 'Board', 'FaceID', 'FrontCamera', 'RearCamera']
+const splitList = (v: unknown) => String(v ?? '').split(',').map(x => x.trim()).filter(Boolean)
 
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024 // 3MB — keeps the PDF a sane size
 
@@ -73,8 +73,8 @@ export default function DiagnosticsReportPage() {
   const [version, setVersion] = useState('')
   const [carrier, setCarrier] = useState('')
   const [manufacturer, setManufacturer] = useState('Apple')
-  const [grade, setGrade] = useState('')
   const [aNumber, setANumber] = useState('')
+  const [testerName, setTesterName] = useState('')
   const [reportDate, setReportDate] = useState(() => new Date().toISOString().split('T')[0])
 
   // Battery Information
@@ -82,39 +82,34 @@ export default function DiagnosticsReportPage() {
   const [designCapacity, setDesignCapacity] = useState('')
   const [cycleCount, setCycleCount] = useState('')
   const [batteryHealth, setBatteryHealth] = useState('')
+  const [currentCapacity, setCurrentCapacity] = useState('')
 
   // Lock Status — generic device-lock concepts, not any one vendor's format.
-  const [fmip, setFmip] = useState<'Off' | 'On'>('Off')
-  const [mdm, setMdm] = useState<'Off' | 'Locked' | 'Unlocked'>('Off')
-  const [blacklistStatus, setBlacklistStatus] = useState<'Clean' | 'Blacklisted' | 'Unknown'>('Clean')
-  const [simLockStatus, setSimLockStatus] = useState<'Unlocked' | 'Locked' | 'Unknown'>('Unlocked')
+  const [fmip, setFmip] = useState('Off')          // FRP / Find My
+  const [mdm, setMdm] = useState('Unlock')
+  const [blacklistStatus, setBlacklistStatus] = useState('Clean')
+  const [simLockStatus, setSimLockStatus] = useState('Unlocked')
+  const [idLock, setIdLock] = useState('Off')
 
   // Parts verification — editable rows, defaults are just a starting point.
-  const [partsRows, setPartsRows] = useState<PartRow[]>([
-    { component: 'Battery', factoryValue: '', readValue: '', result: 'N/A' },
-    { component: 'Display', factoryValue: '', readValue: '', result: 'N/A' },
-    { component: 'Rear Camera', factoryValue: '', readValue: '', result: 'N/A' }
-  ])
+  const [partsRows, setPartsRows] = useState<PartRow[]>(
+    DEFAULT_PARTS.map(component => ({ component, factoryValue: '', readValue: '', result: 'Normal' as const }))
+  )
 
   // Wipe Information — no claim of any specific third-party certification.
   // Operation defaults to blank: describe your own actual process here
   // rather than it being pre-filled with anything.
   const [osVersion, setOsVersion] = useState('iOS')
-  const [erasureVersion, setErasureVersion] = useState('')
   const [operation, setOperation] = useState('')
-  const [wipeStatus, setWipeStatus] = useState<'Not Performed' | 'Performed' | 'Failed'>('Not Performed')
-  const [wipeNotes, setWipeNotes] = useState('')
+  const [wipedResult, setWipedResult] = useState('YES')
+  const [drfoneFound, setDrfoneFound] = useState<boolean | null>(null)
 
-  const [checklist, setChecklist] = useState<CheckItem[]>(
-    DEFAULT_CHECKLIST.flatMap(g => g.items.map(name => ({ name, result: 'Pass' as const })))
-  )
+  const [checklist, setChecklist] = useState<CheckItem[]>(DEFAULT_TESTS.map(name => ({ name, result: 'Pass' as const })))
 
   // Optional images — processed locally for the PDF only, never uploaded to
   // Supabase or any database.
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null)
-  const [devicePhotoDataUrl, setDevicePhotoDataUrl] = useState<string | null>(null)
   const logoInputRef = useRef<HTMLInputElement>(null)
-  const photoInputRef = useRef<HTMLInputElement>(null)
 
   const [generating, setGenerating] = useState(false)
 
@@ -160,6 +155,33 @@ export default function DiagnosticsReportPage() {
     e.target.value = ''
   }
 
+  // Fill the report from the Dr.Fone test stored in Stock Master (device_master).
+  function applyDrfone(d: any) {
+    const v = (x: unknown) => (x === null || x === undefined ? '' : String(x))
+    setSerialNumber(v(d.serial)); setVersion(v(d.version)); setCarrier(v(d.carrier))
+    setTesterName(v(d.tester_name)); setOsVersion(v(d.os) || 'iOS')
+    setBatterySerial(v(d.battery_serial)); setDesignCapacity(v(d.design_capacity)); setCycleCount(v(d.cycle_count))
+    setBatteryHealth(v(d.battery_health)); setCurrentCapacity(v(d.current_capacity))
+    if (d.fmi) setFmip(v(d.fmi))
+    if (d.mdm_lock) setMdm(v(d.mdm_lock))
+    if (d.sim_lock) setSimLockStatus(v(d.sim_lock))
+    if (d.wipe) setWipedResult(v(d.wipe).toUpperCase())
+    if (d.test_time) {
+      const t = new Date(d.test_time)
+      if (!isNaN(t.getTime())) setReportDate(t.toISOString().split('T')[0])
+    }
+    const pass = splitList(d.pass), fail = splitList(d.fail)
+    if (pass.length + fail.length > 0) {
+      const failSet = new Set(fail.map(x => x.toLowerCase()))
+      const names = Array.from(new Set([...pass, ...fail]))
+      setChecklist(names.map(name => ({ name, result: failSet.has(name.toLowerCase()) ? 'Fail' as const : 'Pass' as const })))
+    }
+    if (d.battery_serial) {
+      setPartsRows(prev => prev.map(r => r.component === 'Battery' && !r.factoryValue
+        ? { ...r, factoryValue: v(d.battery_serial), readValue: v(d.battery_serial) } : r))
+    }
+  }
+
   async function handleLookup(e: React.FormEvent) {
     e.preventDefault()
     const imei = imeiInput.trim()
@@ -169,16 +191,23 @@ export default function DiagnosticsReportPage() {
     setErrorMsg('')
     setItem(null)
     setNotFound(false)
+    setDrfoneFound(null)
 
-    const { data, error } = await supabase
-      .from('repair_request_items')
-      .select(`
-        *,
-        technicians_vendors!repair_request_items_technician_id_fkey (name, type)
-      `)
-      .eq('imei', imei)
-      .order('created_at', { ascending: false })
-      .limit(1)
+    const [{ data, error }, deviceRes] = await Promise.all([
+      supabase
+        .from('repair_request_items')
+        .select(`
+          *,
+          technicians_vendors!repair_request_items_technician_id_fkey (name, type)
+        `)
+        .eq('imei', imei)
+        .order('created_at', { ascending: false })
+        .limit(1),
+      /^\d{15}$/.test(imei) ? fetch(`/api/device?imei=${imei}`).then(r => r.json()).catch(() => null) : Promise.resolve(null),
+    ])
+    const device = deviceRes?.success ? deviceRes.device : null
+    setDrfoneFound(!!device)
+    if (device) applyDrfone(device)
 
     if (error) {
       setErrorMsg(error.message)
@@ -186,8 +215,13 @@ export default function DiagnosticsReportPage() {
       return
     }
     if (!data || data.length === 0) {
-      setErrorMsg('No repair record found for this IMEI.')
-      setNotFound(true)
+      if (device) {
+        // Not in repairs, but tested by Dr.Fone: build the report from that.
+        setItem({ imei, model: device.model || '', color: device.color || '', storage_gb: device.gb || '', isManual: false, fromDrfone: true })
+      } else {
+        setErrorMsg('No repair record or Dr.Fone test found for this IMEI.')
+        setNotFound(true)
+      }
       setLoading(false)
       return
     }
@@ -199,7 +233,13 @@ export default function DiagnosticsReportPage() {
     const serviceIds: string[] = row.service_ids || []
     const serviceNames = serviceIds.map((id: string) => serviceMap.get(id) || 'Unknown Service')
 
-    setItem({ ...row, serviceNames })
+    setItem({
+      ...row,
+      model: row.model || device?.model || '',
+      color: row.color || device?.color || '',
+      storage_gb: row.storage_gb || device?.gb || '',
+      serviceNames,
+    })
     setLoading(false)
   }
 
@@ -220,211 +260,293 @@ export default function DiagnosticsReportPage() {
     setGenerating(true)
 
     try {
-      const qrText = [
-        'iFix Pro Diagnostics Report',
-        `IMEI: ${item.imei}`,
-        serialNumber ? `Serial: ${serialNumber}` : null,
-        `Model: ${item.model || '—'}`,
-        `Storage: ${item.storage_gb || '—'} GB`,
-        `Color: ${item.color || '—'}`,
-        grade ? `Grade: ${grade}` : null,
-        batteryHealth ? `Battery Health: ${batteryHealth}%` : null,
-        `Date: ${reportDate}`
-      ].filter(Boolean).join('\n')
+      // ---------------------------------------------------------------
+      // Fixed report layout (A4, mm). Sections, order and field pairs
+      // follow the agreed sample; change them here only on purpose.
+      // ---------------------------------------------------------------
+      const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+      const W = doc.internal.pageSize.getWidth()
+      const H = doc.internal.pageSize.getHeight()
+      const X = 10
+      const COL2 = 108                   // second label column
+      const VAL_OFFSET = 48              // label -> value gap
+      const BAND: [number, number, number] = [30, 192, 238]
+      const GREEN: [number, number, number] = [40, 167, 69]
+      const RED: [number, number, number] = [200, 35, 35]
+      const BOTTOM = 18
+      let y = 0
 
-      const qrDataUrl = await QRCode.toDataURL(qrText, { margin: 1, width: 240 })
-
-      const doc = new jsPDF()
-      const pageWidth = doc.internal.pageSize.getWidth()
-      const pageHeight = doc.internal.pageSize.getHeight()
-      const marginX = 14
-      const bottomMargin = 20
-
-      // Keeps a section from starting right at the bottom edge and then
-      // awkwardly spilling onto the next page mid-block.
-      function ensureSpace(doc: jsPDF, y: number, needed: number) {
-        if (y + needed > pageHeight - bottomMargin) {
-          doc.addPage()
-          return 20
-        }
-        return y
+      const newPageIfNeeded = (needed: number) => {
+        if (y + needed > H - BOTTOM) { doc.addPage(); y = 16 }
       }
+      const resultColor = (v: string) => (/^(pass|normal)$/i.test(v) ? GREEN : /^(fail|mismatch)$/i.test(v) ? RED : [110, 110, 110] as [number, number, number])
 
-      // ---- Header: QR top-left, centered title, optional logo top-right ----
-      const headerHeight = 34
-      doc.setFillColor(15, 23, 42)
-      doc.rect(0, 0, pageWidth, headerHeight, 'F')
-
-      doc.addImage(qrDataUrl, 'PNG', marginX, 5, 24, 24)
-
-      doc.setTextColor(255, 255, 255)
-      doc.setFontSize(15)
+      // ---- Header: title, coloured band with subtitle, logo on the right ----
       doc.setFont('helvetica', 'bold')
-      const title = 'iFix Pro — Device Diagnostics Report'
-      const titleWidth = doc.getTextWidth(title)
-      doc.text(title, (pageWidth - titleWidth) / 2, 20)
-
-      if (logoDataUrl) {
-        try {
-          const dims = await getImageDimensions(logoDataUrl)
-          const { width, height } = fitWithin(dims.width, dims.height, 24, 24)
-          // Right-align and vertically center within the reserved 24x24 box.
-          doc.addImage(logoDataUrl, pageWidth - 14 - width, 5 + (24 - height) / 2, width, height)
-        } catch {
-          // Malformed image data — skip rather than crash the whole PDF.
-        }
-      }
-
-      doc.setDrawColor(255, 255, 255)
-      doc.setLineWidth(0.3)
-      doc.line(marginX, 26, pageWidth - marginX, 26)
-
+      doc.setFontSize(22)
       doc.setTextColor(0, 0, 0)
-      let y = headerHeight + 10
+      doc.text('Device Diagnostics Report', X, 18)
+      doc.setFillColor(...BAND)
+      doc.rect(0, 23, 138, 10, 'F')
+      doc.rect(182, 23, W - 182, 10, 'F')
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(10)
+      doc.setTextColor(255, 255, 255)
+      doc.text('This diagnostics report is generated and certified by Dr Fones!', X, 29.5)
+      // Logo: one uploaded on this page wins; otherwise the permanent company
+      // logo at public/report-logo.png (skipped if that file is missing).
+      let logo = logoDataUrl
+      if (!logo) {
+        try {
+          const res = await fetch('/report-logo.png', { cache: 'no-store' })
+          if (res.ok && res.headers.get('content-type')?.startsWith('image/')) {
+            const blob = await res.blob()
+            logo = await new Promise<string>((resolve, reject) => {
+              const r = new FileReader()
+              r.onload = () => resolve(r.result as string)
+              r.onerror = reject
+              r.readAsDataURL(blob)
+            })
+          }
+        } catch { /* no permanent logo */ }
+      }
+      if (logo) {
+        try {
+          const dims = await getImageDimensions(logo)
+          const { width, height } = fitWithin(dims.width, dims.height, 42, 26)
+          doc.addImage(logo, 160 - width / 2, 8 + (26 - height) / 2, width, height)
+        } catch { /* bad image: leave the space empty */ }
+      }
+      doc.setTextColor(0, 0, 0)
+      y = 44
 
-      function sectionTitle(title: string) {
-        y = ensureSpace(doc, y, 14)
-        doc.setFillColor(226, 232, 240)
-        doc.rect(marginX, y - 5, pageWidth - marginX * 2, 7, 'F')
+      const heading = (title: string, underline = false) => {
+        newPageIfNeeded(16)
         doc.setFont('helvetica', 'bold')
-        doc.setFontSize(10)
-        doc.text(title, marginX + 2, y)
-        y += 10
+        doc.setFontSize(15)
+        doc.setTextColor(0, 0, 0)
+        doc.text(title, X, y)
+        if (underline) {
+          doc.setDrawColor(0, 0, 0); doc.setLineWidth(0.4)
+          doc.line(X, y + 1.2, X + doc.getTextWidth(title), y + 1.2)
+        }
+        y += 8
+      }
+      // Two label/value pairs per line; a missing pair leaves its half empty.
+      const pairs = (rows: [string, string, string?, string?][]) => {
+        rows.forEach(([l1, v1, l2, v2]) => {
+          newPageIfNeeded(7)
+          doc.setFontSize(10.5)
+          doc.setFont('helvetica', 'bold'); doc.text(`${l1} :`, X + 1, y)
+          doc.setFont('helvetica', 'normal'); doc.text(doc.splitTextToSize(v1 || 'N/A', COL2 - X - VAL_OFFSET - 2)[0], X + VAL_OFFSET, y)
+          if (l2) {
+            doc.setFont('helvetica', 'bold'); doc.text(`${l2} :`, COL2, y)
+            doc.setFont('helvetica', 'normal'); doc.text(doc.splitTextToSize(v2 || 'N/A', W - COL2 - VAL_OFFSET - X)[0], COL2 + VAL_OFFSET - 6, y)
+          }
+          y += 6.5
+        })
+        y += 3
       }
 
-      function field(label: string, value: string, x: number) {
-        doc.setFont('helvetica', 'bold')
-        doc.setFontSize(9)
-        doc.text(`${label}:`, x, y)
-        doc.setFont('helvetica', 'normal')
-        const maxWidth = x < 110 ? 90 : pageWidth - marginX - x - 32
-        const text = doc.splitTextToSize(value || '—', maxWidth)
-        doc.text(text, x + 32, y)
-      }
-
-      // ---- Device Information ----
-      sectionTitle('Device Information')
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(12)
-      doc.text(item.model || 'Unknown Model', marginX + 2, y)
-      y += 8
-
-      const storageText = item.storage_gb
-        ? (String(item.storage_gb).toUpperCase().includes('GB') ? String(item.storage_gb) : `${item.storage_gb} GB`)
+      const memory = item.storage_gb
+        ? (String(item.storage_gb).toUpperCase().includes('GB') ? String(item.storage_gb) : `${item.storage_gb}GB`)
         : ''
 
-      field('IMEI', item.imei, marginX); field('Version', version, 110); y += 7
-      field('Serial Number', serialNumber, marginX); field('Carrier', carrier, 110); y += 7
-      field('Model', item.model, marginX); field('Manufacturer', manufacturer, 110); y += 7
-      field('Colour', item.color, marginX); field('Grade', grade, 110); y += 7
-      field('Memory', storageText, marginX); field('A Number', aNumber, 110); y += 12
+      // ---- Device Information ----
+      heading('Device Information')
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
+      doc.text(item.model || 'Unknown Model', X, y); y += 8
+      pairs([
+        ['IMEI', item.imei, 'Version', version],
+        ['Serial Number', serialNumber, 'Carrier', carrier],
+        ['Model', item.model, 'Manufacture', manufacturer],
+        ['Color', item.color, 'Memory', memory],
+        ['ANumber', aNumber, 'Tester Name', testerName],
+      ])
 
       // ---- Battery Information ----
-      sectionTitle('Battery Information')
-      field('Battery Serial Number', batterySerial, marginX); field('Design Capacity', designCapacity ? `${designCapacity} mAh` : '', 110); y += 7
-      field('Cycle Count', cycleCount, marginX); field('Battery Health', batteryHealth ? `${batteryHealth}%` : '', 110); y += 12
+      heading('Battery Information')
+      pairs([
+        ['Serial Number', batterySerial, 'Design Capacity', designCapacity],
+        ['Cycle Count', cycleCount, 'Battery Health', batteryHealth ? `${String(batteryHealth).replace('%', '')}%` : ''],
+        ['Current Capacity', currentCapacity],
+      ])
 
       // ---- Locks Information ----
-      sectionTitle('Locks Information')
-      field('FMIP', fmip, marginX); field('MDM', mdm, 110); y += 7
-      field('Blacklist', blacklistStatus, marginX); field('SIM Lock', simLockStatus, 110); y += 10
+      heading('Locks Information')
+      pairs([
+        ['FRP', fmip, 'MDM', mdm],
+        ['Blacklist', blacklistStatus, 'SIM', simLockStatus],
+        ['ID Lock', idLock],
+      ])
 
-      // ---- Optional device photo ----
-      if (devicePhotoDataUrl) {
-        y = ensureSpace(doc, y, 48)
-        try {
-          const dims = await getImageDimensions(devicePhotoDataUrl)
-          const { width, height } = fitWithin(dims.width, dims.height, 40, 40)
-          doc.addImage(devicePhotoDataUrl, marginX, y, width, height)
-          y += height + 6
-        } catch {
-          // Skip silently rather than crash the PDF on bad image data.
-        }
-      }
-
-      // ---- Parts Info ----
-      if (partsRows.length > 0) {
-        sectionTitle('Parts Info')
+      // ---- Parts Information ----
+      const parts = partsRows.filter(r => r.component.trim())
+      if (parts.length > 0) {
+        y += 2
+        heading('Parts Information', true)
         autoTable(doc, {
-          head: [['Component', 'Factory Value', 'Read Value', 'Result']],
-          body: partsRows.filter(r => r.component.trim()).map(r => [r.component, r.factoryValue || '—', r.readValue || '—', r.result]),
+          head: [['Test Item', 'Factory Value', 'Read Value', 'Result']],
+          body: parts.map(r => [r.component, r.factoryValue || 'N/A', r.readValue || 'N/A', r.result]),
           startY: y,
-          margin: { left: marginX, right: marginX },
-          styles: { fontSize: 8 },
-          headStyles: { fillColor: [15, 23, 42] }
+          margin: { left: X, right: X, bottom: BOTTOM },
+          theme: 'plain',
+          styles: { fontSize: 8, cellPadding: { top: 0.8, bottom: 0.8, left: 0.5, right: 1 }, textColor: 0 },
+          headStyles: { fontSize: 11, fontStyle: 'bold' },
+          columnStyles: { 0: { cellWidth: 28 }, 1: { cellWidth: 66 }, 2: { cellWidth: 66 }, 3: { cellWidth: 30 } },
+          didParseCell: d => {
+            if (d.section === 'body' && d.column.index === 3) d.cell.styles.textColor = resultColor(String(d.cell.raw))
+          },
         })
-        // @ts-ignore - autoTable attaches this to the doc instance
-        y = doc.lastAutoTable.finalY + 10
+        // @ts-expect-error autoTable adds lastAutoTable to the doc
+        y = doc.lastAutoTable.finalY + 8
       }
 
       // ---- Wipe Information ----
-      y = ensureSpace(doc, y, 30)
-      sectionTitle('Wipe Information')
-      field('Erasure Version', erasureVersion, marginX); field('OS Version', osVersion, 110); y += 7
-      const erasureResult = wipeStatus === 'Performed' ? 'Pass' : wipeStatus === 'Failed' ? 'Fail' : 'Not Performed'
-      field('Erasure Result', erasureResult, marginX); field('Operation', operation, 110); y += 7
-      if (wipeNotes) {
-        doc.setFont('helvetica', 'normal')
-        doc.setFontSize(8)
-        doc.text(`Notes: ${wipeNotes}`, marginX, y)
-        y += 6
+      heading('Wipe Information')
+      newPageIfNeeded(14)
+      doc.setFontSize(10.5)
+      doc.setFont('helvetica', 'bold'); doc.text('OS Version :', X + 1, y)
+      doc.setFont('helvetica', 'normal'); doc.text(osVersion || 'N/A', X + 45, y)
+      doc.setFont('helvetica', 'bold'); doc.text('Wiped Result :', 95, y)
+      const wipedLabelW = doc.getTextWidth('Wiped Result : ')
+      doc.setFont('helvetica', 'normal'); doc.text(wipedResult || 'N/A', 95 + wipedLabelW, y)
+      y += 6.5
+      doc.setFont('helvetica', 'bold'); doc.text('Operation :', X + 1, y)
+      doc.setFont('helvetica', 'normal'); doc.text(operation || 'N/A', X + 45, y)
+      y += 12
+
+      // ---- Diagnostics Information: two columns of test / result ----
+      newPageIfNeeded(24)
+      doc.setFillColor(...BAND)
+      doc.rect(X + 1, y - 7, 75, 0.9, 'F')
+      heading('Diagnostics Information')
+      y += 2
+      const tests = checklist.filter(c => c.name.trim())
+      const half = Math.ceil(tests.length / 2)
+      const body: string[][] = []
+      for (let i = 0; i < half; i++) {
+        const a = tests[i * 2], b = tests[i * 2 + 1]
+        body.push([a?.name || '', a?.result || '', b?.name || '', b?.result || ''])
       }
-      y += 6
-
-      // ---- Diagnostics Information — 3 columns ----
-      y = ensureSpace(doc, y, 20)
-      sectionTitle('Diagnostics Information')
-
-      const triples: string[][] = []
-      for (let i = 0; i < checklist.length; i += 3) {
-        const chunk = checklist.slice(i, i + 3)
-        const row: string[] = []
-        for (let c = 0; c < 3; c++) {
-          row.push(chunk[c]?.name || '')
-          row.push(chunk[c]?.result || '')
-        }
-        triples.push(row)
-      }
-
       autoTable(doc, {
-        body: triples,
+        body,
         startY: y,
-        margin: { left: marginX, right: marginX },
-        styles: { fontSize: 8, cellPadding: 1.5 },
-        columnStyles: {
-          0: { fontStyle: 'bold' }, 2: { fontStyle: 'bold' }, 4: { fontStyle: 'bold' }
+        margin: { left: X, right: X, bottom: BOTTOM },
+        theme: 'plain',
+        styles: { fontSize: 11, fontStyle: 'bold', cellPadding: { top: 1, bottom: 1, left: 0.5, right: 1 }, textColor: 0 },
+        columnStyles: { 0: { cellWidth: 72 }, 1: { cellWidth: 23 }, 2: { cellWidth: 60 }, 3: { cellWidth: 25 } },
+        didParseCell: d => {
+          if (d.column.index === 1 || d.column.index === 3) d.cell.styles.textColor = resultColor(String(d.cell.raw))
         },
-        didParseCell: (data) => {
-          if (data.section === 'body' && [1, 3, 5].includes(data.column.index)) {
-            const val = data.cell.raw as string
-            if (val === 'Pass') data.cell.styles.textColor = [16, 128, 80]
-            else if (val === 'Fail') data.cell.styles.textColor = [185, 28, 28]
-            else data.cell.styles.textColor = [120, 120, 120]
-          }
-        }
       })
+      // @ts-expect-error autoTable adds lastAutoTable to the doc
+      y = doc.lastAutoTable.finalY + 10
 
-      // @ts-ignore
-      y = doc.lastAutoTable.finalY + 8
+      // ---- Testing score, date and QR ----
+      const scored = tests.filter(t => t.result !== 'N/A')
+      const score = scored.length ? Math.round((scored.filter(t => t.result === 'Pass').length / scored.length) * 100) : 0
+      const qrText = [
+        'https://ifix.glpwms.com',
+        'iFix Pro Diagnostics Report',
+        `IMEI: ${item.imei}`,
+        serialNumber ? `Serial: ${serialNumber}` : null,
+        `Model: ${item.model || '-'}`,
+        `Testing Score: ${score}`,
+        `Date: ${reportDate}`,
+      ].filter(Boolean).join('\n')
+      const qrDataUrl = await QRCode.toDataURL(qrText, { margin: 1, width: 240 })
 
-      // ---- Footer: overall result + date, consistent on every page ----
-      const overallResult = checklist.some(c => c.result === 'Fail') ? 'Fail' : 'Pass'
-      const pageCount = doc.internal.pages.length - 1
-      for (let p = 1; p <= pageCount; p++) {
-        doc.setPage(p)
-        doc.setDrawColor(200, 200, 200)
-        doc.setLineWidth(0.2)
-        doc.line(marginX, pageHeight - 14, pageWidth - marginX, pageHeight - 14)
-        doc.setFont('helvetica', 'bold')
-        doc.setFontSize(8)
-        doc.setTextColor(0, 0, 0)
-        doc.text(`Result: ${overallResult}   ·   Date: ${reportDate}`, marginX, pageHeight - 8)
-        doc.setFont('helvetica', 'normal')
-        doc.setTextColor(120, 120, 120)
-        doc.text(`iFix Pro — Page ${p} of ${pageCount}`, pageWidth - marginX - 40, pageHeight - 8)
+      newPageIfNeeded(62)
+      // QR code at the right of the diagnostics heading (like the sample)
+      // is placed below instead, beside the stamp, to keep the tests column clear.
+
+      // Score box: green border, "Testing Score  N", five stars, date below.
+      const boxX = X - 3, boxY = y, boxW = 66, boxH = 26
+      doc.setDrawColor(...GREEN); doc.setLineWidth(1.2)
+      doc.roundedRect(boxX, boxY, boxW, boxH, 1, 1, 'S')
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(0, 0, 0)
+      const label = 'Testing Score'
+      const scoreText = String(score)
+      doc.setFontSize(13); const lw = doc.getTextWidth(label)
+      doc.setFontSize(19); const sw = doc.getTextWidth(scoreText)
+      const startX = boxX + (boxW - (lw + 8 + sw)) / 2
+      doc.setFontSize(13); doc.text(label, startX, boxY + 10)
+      doc.setFontSize(19); doc.setTextColor(...GREEN); doc.text(scoreText, startX + lw + 8, boxY + 10.5)
+
+      // Stars: filled for each 20 points (rounded), outline for the rest.
+      const STAR_GREEN: [number, number, number] = [95, 190, 95]
+      const filled = Math.round(score / 20)
+      const star = (cx: number, cy: number, r: number, fill: boolean) => {
+        const pts: [number, number][] = []
+        for (let k = 0; k < 10; k++) {
+          const ang = -Math.PI / 2 + (k * Math.PI) / 5
+          const rad = k % 2 === 0 ? r : r * 0.42
+          pts.push([cx + rad * Math.cos(ang), cy + rad * Math.sin(ang)])
+        }
+        const segs = pts.slice(1).map((pt, k) => [pt[0] - pts[k][0], pt[1] - pts[k][1]])
+        doc.setFillColor(...STAR_GREEN); doc.setDrawColor(...STAR_GREEN); doc.setLineWidth(0.4)
+        doc.lines(segs, pts[0][0], pts[0][1], [1, 1], fill ? 'F' : 'S', true)
+      }
+      const r = 3.6, gap = 9.2
+      const firstX = boxX + boxW / 2 - 2 * gap
+      for (let k = 0; k < 5; k++) star(firstX + k * gap, boxY + 18.5, r, k < filled)
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(0, 0, 0)
+      doc.text(`Date: ${reportDate}`, boxX + boxW / 2, boxY + boxH + 8, { align: 'center' })
+
+      // "TESTED / APPROVED" round stamp with the approver underneath.
+      const cx = 105, cy = boxY + 12.8, R = 12.8
+      doc.setDrawColor(25, 25, 25); doc.setTextColor(25, 25, 25)
+      doc.setLineWidth(1.1); doc.circle(cx, cy, R, 'S')
+      doc.setLineWidth(0.5); doc.circle(cx, cy, R * 0.87, 'S')
+      doc.setLineWidth(0.5); doc.circle(cx, cy, R * 0.51, 'S')
+      const arcText = (text: string, radius: number, startDeg: number, endDeg: number, top: boolean) => {
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(5.2)
+        const chars = text.split('')
+        chars.forEach((ch, idx) => {
+          const t = chars.length === 1 ? 0.5 : idx / (chars.length - 1)
+          const deg = startDeg + (endDeg - startDeg) * t
+          const rad = (deg * Math.PI) / 180
+          const px = cx + radius * Math.cos(rad), py = cy + radius * Math.sin(rad)
+          const rot = top ? -(deg + 90) : -(deg - 90)
+          doc.text(ch, px, py, { angle: rot, align: 'center', baseline: 'middle' })
+        })
+      }
+      arcText('APPROVED', R * 0.69, 238, 302, true)
+      arcText('APPROVED', R * 0.69, 122, 58, false)
+      // Band across the middle with TESTED, slightly tilted like a stamp
+      doc.setFillColor(255, 255, 255)
+      doc.setLineWidth(0.8)
+      const tilt = -11, tr = (tilt * Math.PI) / 180
+      const bw = 2 * R + 3, bh = 5.8
+      const corner = (dx: number, dy: number): [number, number] => [cx + dx * Math.cos(tr) - dy * Math.sin(tr), cy + dx * Math.sin(tr) + dy * Math.cos(tr)]
+      const c1 = corner(-bw / 2, -bh / 2), c2 = corner(bw / 2, -bh / 2), c3 = corner(bw / 2, bh / 2), c4 = corner(-bw / 2, bh / 2)
+      doc.lines([[c2[0] - c1[0], c2[1] - c1[1]], [c3[0] - c2[0], c3[1] - c2[1]], [c4[0] - c3[0], c4[1] - c3[1]]], c1[0], c1[1], [1, 1], 'FD', true)
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
+      doc.text('TESTED', cx, cy, { angle: -tilt, align: 'center', baseline: 'middle' })
+      doc.setFontSize(4.6); doc.text('* * *', cx, cy - 5, { align: 'center', baseline: 'middle' })
+      doc.text('* * *', cx, cy + 5.5, { align: 'center', baseline: 'middle' })
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(12); doc.setTextColor(0, 0, 0)
+      doc.text('Approved by iFix Pro', cx, cy + R + 8, { align: 'center' })
+
+      // QR to the far right, for scanning the device summary
+      doc.addImage(qrDataUrl, 'PNG', 159, boxY, 25.7, 25.7)
+      // Under the QR: the site, on the same line as "Approved by" and "Date"
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(0, 0, 0)
+      doc.text('ifix.glpwms.com', 159 + 25.7 / 2, cy + R + 8, { align: 'center' })
+      y = boxY + boxH + 18
+
+      // ---- Page numbers ----
+      const pageCount = doc.getNumberOfPages()
+      for (let pg = 1; pg <= pageCount; pg++) {
+        doc.setPage(pg)
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(140, 140, 140)
+        doc.text(`Page ${pg} of ${pageCount}`, W - X, H - 8, { align: 'right' })
       }
 
-      doc.save(`iFixPro_Diagnostics_${item.imei}.pdf`)
+      doc.save(`Diagnostics_${item.imei}.pdf`)
     } finally {
       setGenerating(false)
     }
@@ -435,8 +557,7 @@ export default function DiagnosticsReportPage() {
       <div className="bg-white p-6 rounded-lg shadow-sm border">
         <h2 className="text-xl font-bold text-gray-900">Diagnostics Report</h2>
         <p className="text-sm text-gray-600 mt-1">
-          Generates an iFix Pro-branded PDF report from this IMEI's actual record, plus device
-          details you enter below.
+          Fixed report format. Loads the device from repairs and its Dr.Fone test in Stock Master; check the details and download the PDF.
         </p>
       </div>
 
@@ -502,16 +623,24 @@ export default function DiagnosticsReportPage() {
             )}
           </div>
 
+          {drfoneFound !== null && (
+            <div className={`text-xs p-2.5 rounded-lg border ${drfoneFound ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>
+              {drfoneFound ? 'Filled from the Dr.Fone test in Stock Master. Check the details, then download.' : 'No Dr.Fone test found for this IMEI. Fill the details in by hand.'}
+            </div>
+          )}
+
           <div className="border-t pt-4 space-y-3">
-            <p className="text-xs font-bold text-gray-500 uppercase">Device Information — not tracked in iFix Pro yet</p>
+            <p className="text-xs font-bold text-gray-500 uppercase">Device Information</p>
             <div className="grid grid-cols-3 gap-3">
               <input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} placeholder="Serial Number" className="border border-gray-300 rounded-lg p-2 text-sm" />
               <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="Version" className="border border-gray-300 rounded-lg p-2 text-sm" />
               <input value={carrier} onChange={(e) => setCarrier(e.target.value)} placeholder="Carrier" className="border border-gray-300 rounded-lg p-2 text-sm" />
-              <input value={manufacturer} onChange={(e) => setManufacturer(e.target.value)} placeholder="Manufacturer" className="border border-gray-300 rounded-lg p-2 text-sm" />
-              <input value={grade} onChange={(e) => setGrade(e.target.value)} placeholder="Grade (e.g. A3)" className="border border-gray-300 rounded-lg p-2 text-sm" />
-              <input value={aNumber} onChange={(e) => setANumber(e.target.value)} placeholder="A Number" className="border border-gray-300 rounded-lg p-2 text-sm" />
-              <input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} className="border border-gray-300 rounded-lg p-2 text-sm col-span-3 md:col-span-1" />
+              <input value={manufacturer} onChange={(e) => setManufacturer(e.target.value)} placeholder="Manufacture" className="border border-gray-300 rounded-lg p-2 text-sm" />
+              <input value={aNumber} onChange={(e) => setANumber(e.target.value)} placeholder="ANumber (e.g. A2881)" className="border border-gray-300 rounded-lg p-2 text-sm" />
+              <input value={testerName} onChange={(e) => setTesterName(e.target.value)} placeholder="Tester Name" className="border border-gray-300 rounded-lg p-2 text-sm" />
+              <label className="text-xs text-gray-500 flex flex-col gap-1">Report date
+                <input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} className="border border-gray-300 rounded-lg p-2 text-sm" />
+              </label>
             </div>
           </div>
 
@@ -519,81 +648,68 @@ export default function DiagnosticsReportPage() {
             <p className="text-xs font-bold text-gray-500 uppercase">Battery Information</p>
             <div className="grid grid-cols-2 gap-3">
               <input value={batterySerial} onChange={(e) => setBatterySerial(e.target.value)} placeholder="Battery Serial Number" className="border border-gray-300 rounded-lg p-2 text-sm" />
-              <input value={designCapacity} onChange={(e) => setDesignCapacity(e.target.value)} placeholder="Design Capacity (mAh)" className="border border-gray-300 rounded-lg p-2 text-sm" />
+              <input value={designCapacity} onChange={(e) => setDesignCapacity(e.target.value)} placeholder="Design Capacity" className="border border-gray-300 rounded-lg p-2 text-sm" />
               <input value={cycleCount} onChange={(e) => setCycleCount(e.target.value)} placeholder="Cycle Count" className="border border-gray-300 rounded-lg p-2 text-sm" />
               <input value={batteryHealth} onChange={(e) => setBatteryHealth(e.target.value)} placeholder="Battery Health (%)" className="border border-gray-300 rounded-lg p-2 text-sm" />
+              <input value={currentCapacity} onChange={(e) => setCurrentCapacity(e.target.value)} placeholder="Current Capacity" className="border border-gray-300 rounded-lg p-2 text-sm" />
             </div>
           </div>
 
           <div className="border-t pt-4 space-y-3">
-            <p className="text-xs font-bold text-gray-500 uppercase">Lock Status</p>
+            <p className="text-xs font-bold text-gray-500 uppercase">Locks Information</p>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <label className="flex items-center justify-between border border-gray-300 rounded-lg p-2">
-                FMIP
-                <select value={fmip} onChange={(e) => setFmip(e.target.value as any)} className="font-semibold">
-                  <option>Off</option><option>On</option>
+                FRP
+                <select value={fmip} onChange={(e) => setFmip(e.target.value)} className="font-semibold">
+                  {!['Off', 'On'].includes(fmip) && <option>{fmip}</option>}<option>Off</option><option>On</option>
                 </select>
               </label>
               <label className="flex items-center justify-between border border-gray-300 rounded-lg p-2">
                 MDM
-                <select value={mdm} onChange={(e) => setMdm(e.target.value as any)} className="font-semibold">
-                  <option>Off</option><option>Locked</option><option>Unlocked</option>
+                <select value={mdm} onChange={(e) => setMdm(e.target.value)} className="font-semibold">
+                  {!['Unlock', 'Locked'].includes(mdm) && <option>{mdm}</option>}<option>Unlock</option><option>Locked</option>
                 </select>
               </label>
               <label className="flex items-center justify-between border border-gray-300 rounded-lg p-2">
                 Blacklist
-                <select value={blacklistStatus} onChange={(e) => setBlacklistStatus(e.target.value as any)} className="font-semibold">
-                  <option>Clean</option><option>Blacklisted</option><option>Unknown</option>
+                <select value={blacklistStatus} onChange={(e) => setBlacklistStatus(e.target.value)} className="font-semibold">
+                  {!['Clean', 'Blacklisted', 'Unknown'].includes(blacklistStatus) && <option>{blacklistStatus}</option>}<option>Clean</option><option>Blacklisted</option><option>Unknown</option>
                 </select>
               </label>
               <label className="flex items-center justify-between border border-gray-300 rounded-lg p-2">
-                SIM Lock
-                <select value={simLockStatus} onChange={(e) => setSimLockStatus(e.target.value as any)} className="font-semibold">
-                  <option>Unlocked</option><option>Locked</option><option>Unknown</option>
+                SIM
+                <select value={simLockStatus} onChange={(e) => setSimLockStatus(e.target.value)} className="font-semibold">
+                  {!['Unlocked', 'Locked'].includes(simLockStatus) && <option>{simLockStatus}</option>}<option>Unlocked</option><option>Locked</option>
+                </select>
+              </label>
+              <label className="flex items-center justify-between border border-gray-300 rounded-lg p-2">
+                ID Lock
+                <select value={idLock} onChange={(e) => setIdLock(e.target.value)} className="font-semibold">
+                  {!['Off', 'On'].includes(idLock) && <option>{idLock}</option>}<option>Off</option><option>On</option>
                 </select>
               </label>
             </div>
           </div>
 
-          <div className="border-t pt-4 space-y-3">
-            <p className="text-xs font-bold text-gray-500 uppercase">Optional Images (processed locally — not uploaded anywhere)</p>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-xs text-gray-600 mb-1">Company Logo (top-right of PDF)</p>
-                {logoDataUrl ? (
-                  <div className="flex items-center gap-2">
-                    <img src={logoDataUrl} alt="Logo preview" className="h-12 w-12 object-contain border rounded" />
-                    <button type="button" onClick={() => setLogoDataUrl(null)} className="text-xs text-red-600 font-bold">Remove</button>
-                    <button type="button" onClick={() => logoInputRef.current?.click()} className="text-xs text-slate-700 font-bold">Replace</button>
-                  </div>
-                ) : (
-                  <button type="button" onClick={() => logoInputRef.current?.click()} className="text-xs px-3 py-1.5 border border-gray-300 rounded-lg font-bold text-gray-700">
-                    Upload Logo
-                  </button>
-                )}
-                <input ref={logoInputRef} type="file" accept="image/png,image/jpeg" className="hidden" onChange={(e) => handleImageUpload(e, setLogoDataUrl)} />
+          <div className="border-t pt-4 space-y-2">
+            <p className="text-xs font-bold text-gray-500 uppercase">Logo for this report only (optional; the company logo is used automatically)</p>
+            {logoDataUrl ? (
+              <div className="flex items-center gap-2">
+                <img src={logoDataUrl} alt="Logo preview" className="h-12 w-12 object-contain border rounded" />
+                <button type="button" onClick={() => setLogoDataUrl(null)} className="text-xs text-red-600 font-bold">Remove</button>
+                <button type="button" onClick={() => logoInputRef.current?.click()} className="text-xs text-slate-700 font-bold">Replace</button>
               </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-1">Device Photo (optional)</p>
-                {devicePhotoDataUrl ? (
-                  <div className="flex items-center gap-2">
-                    <img src={devicePhotoDataUrl} alt="Device preview" className="h-12 w-12 object-cover border rounded" />
-                    <button type="button" onClick={() => setDevicePhotoDataUrl(null)} className="text-xs text-red-600 font-bold">Remove</button>
-                    <button type="button" onClick={() => photoInputRef.current?.click()} className="text-xs text-slate-700 font-bold">Replace</button>
-                  </div>
-                ) : (
-                  <button type="button" onClick={() => photoInputRef.current?.click()} className="text-xs px-3 py-1.5 border border-gray-300 rounded-lg font-bold text-gray-700">
-                    Upload Photo
-                  </button>
-                )}
-                <input ref={photoInputRef} type="file" accept="image/png,image/jpeg" className="hidden" onChange={(e) => handleImageUpload(e, setDevicePhotoDataUrl)} />
-              </div>
-            </div>
+            ) : (
+              <button type="button" onClick={() => logoInputRef.current?.click()} className="text-xs px-3 py-1.5 border border-gray-300 rounded-lg font-bold text-gray-700">
+                Upload Logo
+              </button>
+            )}
+            <input ref={logoInputRef} type="file" accept="image/png,image/jpeg" className="hidden" onChange={(e) => handleImageUpload(e, setLogoDataUrl)} />
           </div>
 
           <div className="border-t pt-4 space-y-3">
             <div className="flex justify-between items-center">
-              <p className="text-xs font-bold text-gray-500 uppercase">Parts Verification</p>
+              <p className="text-xs font-bold text-gray-500 uppercase">Parts Information</p>
               <button type="button" onClick={addPartRow} className="text-xs font-bold text-slate-900 hover:underline">+ Add Row</button>
             </div>
             {partsRows.map((row, idx) => (
@@ -613,43 +729,35 @@ export default function DiagnosticsReportPage() {
 
           <div className="border-t pt-4 space-y-3">
             <p className="text-xs font-bold text-gray-500 uppercase">Wipe Information</p>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <input value={erasureVersion} onChange={(e) => setErasureVersion(e.target.value)} placeholder="Erasure Version" className="border border-gray-300 rounded-lg p-2" />
+            <div className="grid grid-cols-3 gap-3 text-sm">
               <input value={osVersion} onChange={(e) => setOsVersion(e.target.value)} placeholder="OS Version" className="border border-gray-300 rounded-lg p-2" />
-              <select value={wipeStatus} onChange={(e) => setWipeStatus(e.target.value as any)} className="border border-gray-300 rounded-lg p-2">
-                <option>Not Performed</option><option>Performed</option><option>Failed</option>
-              </select>
-              <input value={operation} onChange={(e) => setOperation(e.target.value)} placeholder="Operation (describe what was actually done)" className="border border-gray-300 rounded-lg p-2" />
+              <label className="flex items-center justify-between border border-gray-300 rounded-lg p-2">
+                Wiped Result
+                <select value={wipedResult} onChange={(e) => setWipedResult(e.target.value)} className="font-semibold">
+                  {!['YES', 'NO'].includes(wipedResult) && <option>{wipedResult}</option>}<option>YES</option><option>NO</option>
+                </select>
+              </label>
+              <input value={operation} onChange={(e) => setOperation(e.target.value)} placeholder="Operation (N/A if none)" className="border border-gray-300 rounded-lg p-2" />
             </div>
-            <input value={wipeNotes} onChange={(e) => setWipeNotes(e.target.value)} placeholder="Notes (optional)" className="w-full border border-gray-300 rounded-lg p-2 text-sm" />
           </div>
 
           <div className="border-t pt-4 space-y-3">
-            <p className="text-xs font-bold text-gray-500 uppercase">Diagnostics Checklist — click a result to cycle Pass / Fail / N/A</p>
-            {DEFAULT_CHECKLIST.map(group => (
-              <div key={group.group}>
-                <p className="text-xs font-bold text-gray-600 mt-2">{group.group}</p>
-                <div className="grid grid-cols-2 gap-2 mt-1">
-                  {group.items.map(name => {
-                    const checkItem = checklist.find(c => c.name === name)!
-                    return (
-                      <button
-                        key={name}
-                        type="button"
-                        onClick={() => cycleResult(name)}
-                        className="flex items-center justify-between border border-gray-200 rounded-lg px-3 py-1.5 text-xs"
-                      >
-                        <span>{name}</span>
-                        <span className={`font-bold ${
-                          checkItem.result === 'Pass' ? 'text-emerald-600' :
-                          checkItem.result === 'Fail' ? 'text-red-600' : 'text-gray-400'
-                        }`}>{checkItem.result}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
+            <p className="text-xs font-bold text-gray-500 uppercase">
+              Diagnostics Information — click a result to cycle Pass / Fail / N/A
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {checklist.map(c => (
+                <button
+                  key={c.name}
+                  type="button"
+                  onClick={() => cycleResult(c.name)}
+                  className="flex items-center justify-between border border-gray-200 rounded-lg px-3 py-1.5 text-xs"
+                >
+                  <span>{c.name}</span>
+                  <span className={`font-bold ${c.result === 'Pass' ? 'text-emerald-600' : c.result === 'Fail' ? 'text-red-600' : 'text-gray-400'}`}>{c.result}</span>
+                </button>
+              ))}
+            </div>
           </div>
 
           <button
