@@ -35,7 +35,6 @@ const NAV: NavSection[] = [
     title: 'Reports',
     items: [
       { href: '/dashboard/reports/efficiency', module: 'reports/efficiency', label: 'Daily Work Efficiency' },
-      { href: '/dashboard/reports/diagnostics-report', module: 'reports/diagnostics-report', label: 'Diagnostics Report' },
       { href: '/dashboard/reports/damage-parts', module: 'reports/damage-parts', label: <><CrackedScreenIcon className="w-4 h-4 text-red-400 shrink-0" /> Damage Parts</> },
       { href: '/dashboard/reports/requests', module: 'reports/requests', label: 'Repair Request Lists' },
     ],
