@@ -20,6 +20,13 @@ const reportsModules = [
     iconBg: "bg-amber-100 text-amber-600",
   },
   {
+    title: "Diagnostic Reports",
+    description: "View and download diagnostic reports",
+    href: "/dashboard/reports/diagnostics-report",
+    icon: FileText,
+    iconBg: "bg-blue-100 text-blue-600",
+  },
+  {
     title: "Damage Parts",
     description: "Track and manage damaged parts",
     href: "/dashboard/reports/damage-parts",
