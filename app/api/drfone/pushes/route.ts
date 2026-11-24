@@ -27,6 +27,23 @@ function dubaiToday() {
 }
 const dayStart = (d: string) => new Date(`${d}T00:00:00${TZ}`)
 
+// Fake/sample data: IMEI failing the check digit, long runs of zeros
+// (e.g. 350000000000001), or a placeholder serial like ABCDEFGH1234.
+function luhnOk(imei: string) {
+  if (!/^\d{15}$/.test(imei)) return false
+  let sum = 0
+  for (let i = 0; i < 15; i++) {
+    let d = Number(imei[i])
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9 }
+    sum += d
+  }
+  return sum % 10 === 0
+}
+function isTestImei(imei: string) {
+  return !luhnOk(imei) || /0{8,}/.test(imei)
+}
+const isTestSerial = (serial: unknown) => /^ABCDEFGH/i.test(String(serial || ''))
+
 type Log = {
   id: number; created_at: string; status: number; dry_run: boolean; received: number
   inserted: number; updated: number; skipped_older: number; rejected: number
@@ -34,17 +51,18 @@ type Log = {
 }
 
 function summarise(logs: Log[]) {
+  // Counts real devices only; test devices are counted apart
   const devices = new Set<string>()
-  let calls = 0, failed = 0, inserted = 0, updated = 0
+  const tests = new Set<string>()
+  let calls = 0, failed = 0
   for (const l of logs) {
     calls++
     if (l.status >= 400) failed++
     if (l.status === 200 && !l.dry_run) {
-      inserted += l.inserted; updated += l.updated
-      l.imeis.forEach(i => devices.add(i))
+      l.imeis.forEach(i => (isTestImei(i) ? tests : devices).add(i))
     }
   }
-  return { devices: devices.size, calls, failed, inserted, updated }
+  return { devices: devices.size, tests: tests.size, calls, failed }
 }
 
 export async function GET(request: NextRequest) {
@@ -99,9 +117,14 @@ export async function GET(request: NextRequest) {
   for (let i = 0; i < imeis.length; i += 200) {
     const { data } = await db
       .from('device_master')
-      .select('imei,model,gb,color,carrier,grade,tester_name,test_time,battery_health,fail,created_at')
+      .select('imei,serial,model,gb,color,carrier,grade,tester_name,test_time,battery_health,fail,created_at')
       .in('imei', imeis.slice(i, i + 200))
-    ;(data || []).forEach(d => devices.push({ ...d, pushed_at: pushedAt.get(d.imei) }))
+    ;(data || []).forEach(d => devices.push({
+      ...d,
+      pushed_at: pushedAt.get(d.imei),
+      is_new: Math.abs(new Date(d.created_at).getTime() - new Date(pushedAt.get(d.imei)!).getTime()) < 120_000,
+      is_test: isTestImei(d.imei) || isTestSerial(d.serial),
+    }))
   }
   devices.sort((a, b) => String(b.pushed_at).localeCompare(String(a.pushed_at)))
 
