@@ -52,6 +52,40 @@ function adminClient() {
   )
 }
 
+type LogEntry = {
+  status: number
+  dry_run?: boolean
+  received?: number
+  inserted?: number
+  updated?: number
+  skipped_older?: number
+  rejected?: number
+  imeis?: string[]
+  error?: string
+}
+
+// One row per push in drfone_push_log, for the Dr.Fone Pushes page. A failure
+// here (e.g. the table not created yet) never fails the push itself.
+async function logPush(request: Request, entry: LogEntry) {
+  try {
+    const ip = (request.headers.get('x-forwarded-for') || '').split(',')[0].trim() || null
+    const { error } = await adminClient().from('drfone_push_log').insert({ ...entry, source_ip: ip })
+    if (error) console.error('drfone push: log failed', error.message)
+  } catch (err: any) {
+    console.error('drfone push: log failed', err?.message)
+  }
+}
+
+// Answer and record the call in one step.
+async function reply(request: Request, body: any, status: number, extra: Partial<LogEntry> = {}) {
+  await logPush(request, {
+    status,
+    error: status >= 400 ? String(body?.error || '') : undefined,
+    ...extra,
+  })
+  return NextResponse.json(body, { status })
+}
+
 // Lets Dr.Fone (or you) check that the address and key work, without sending data.
 export async function GET(request: Request) {
   const state = checkKey(request)
@@ -61,23 +95,27 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   const state = checkKey(request)
-  if (state !== 'ok') return denyResponse(state)
+  if (state !== 'ok') {
+    // Record refused calls too (no body is read), so wrong-key attempts show up
+    await logPush(request, { status: state === 'denied' ? 401 : 503, error: state === 'denied' ? 'Unauthorized' : 'Endpoint is not enabled' })
+    return denyResponse(state)
+  }
 
   try {
     const declared = Number(request.headers.get('content-length') || 0)
     if (declared > MAX_BODY_BYTES) {
-      return NextResponse.json({ success: false, error: 'Request too large' }, { status: 413 })
+      return reply(request, { success: false, error: 'Request too large' }, 413)
     }
     const text = await request.text()
     if (text.length > MAX_BODY_BYTES) {
-      return NextResponse.json({ success: false, error: 'Request too large' }, { status: 413 })
+      return reply(request, { success: false, error: 'Request too large' }, 413)
     }
 
     let body: any
     try {
       body = JSON.parse(text)
     } catch {
-      return NextResponse.json({ success: false, error: 'Body must be JSON' }, { status: 400 })
+      return reply(request, { success: false, error: 'Body must be JSON' }, 400)
     }
 
     let records: unknown[] | null = null
@@ -86,16 +124,10 @@ export async function POST(request: Request) {
     else if (body && typeof body === 'object' && ('Imei' in body || 'imei' in body)) records = [body]
 
     if (!records) {
-      return NextResponse.json(
-        { success: false, error: 'Expected { "Data": [ ... ] }, an array, or a single record' },
-        { status: 400 }
-      )
+      return reply(request, { success: false, error: 'Expected { "Data": [ ... ] }, an array, or a single record' }, 400)
     }
     if (records.length > MAX_RECORDS) {
-      return NextResponse.json(
-        { success: false, error: `Max ${MAX_RECORDS} records per request - send in smaller batches` },
-        { status: 400 }
-      )
+      return reply(request, { success: false, error: `Max ${MAX_RECORDS} records per request - send in smaller batches` }, 400, { received: records ? records.length : 0 })
     }
 
     const dryRun = new URL(request.url).searchParams.get('dry_run') === '1'
@@ -120,7 +152,7 @@ export async function POST(request: Request) {
       const { data, error } = await db.from('device_master').select('*').in('imei', chunk)
       if (error) {
         console.error('drfone push: lookup failed', error.message)
-        return NextResponse.json({ success: false, error: 'Database error' }, { status: 500 })
+        return reply(request, { success: false, error: 'Database error' }, 500)
       }
       ;(data || []).forEach((r: any) => existingByImei.set(r.imei, r))
     }
@@ -154,8 +186,17 @@ export async function POST(request: Request) {
       skipped_older: skippedOlder,
     }
 
+    const counts = {
+      dry_run: dryRun,
+      received: records.length,
+      inserted,
+      updated,
+      skipped_older: skippedOlder,
+      rejected: rejected.length,
+    }
+
     if (dryRun || toWrite.length === 0) {
-      return NextResponse.json(summary)
+      return reply(request, summary, 200, counts)
     }
 
     // 5) Save (idempotent: same data twice gives the same result)
@@ -165,15 +206,15 @@ export async function POST(request: Request) {
       if (error) {
         console.error('drfone push: save failed', error.message)
         // 500 so Dr.Fone retries; nothing here is half-applied that a retry can't repair
-        return NextResponse.json({ success: false, error: 'Database error' }, { status: 500 })
+        return reply(request, { success: false, error: 'Database error' }, 500, counts)
       }
     }
 
     // Counts only - never log the key or device data
     console.log(`drfone push: received=${records.length} inserted=${inserted} updated=${updated} skipped_older=${skippedOlder} rejected=${rejected.length}`)
-    return NextResponse.json(summary)
+    return reply(request, summary, 200, { ...counts, imeis: toWrite.map(r => r.imei as string) })
   } catch (err: any) {
     console.error('drfone push: unexpected error', err?.message)
-    return NextResponse.json({ success: false, error: 'Server error' }, { status: 500 })
+    return reply(request, { success: false, error: 'Server error' }, 500)
   }
 }
